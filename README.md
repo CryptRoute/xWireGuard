@@ -22,8 +22,8 @@ This script automates the installation and configuration of a WireGuard VPN serv
 1. **Download the Script**: Clone the repository or download the script file.
 
    ```bash
-   git clone https://github.com/yourusername/xwireguard-installer.git
-   cd xwireguard-installer
+   git clone https://github.com/cryptroute/x-wireguard.git
+   cd x-wireguard
    ```
 
 2. **Make the Script Executable**:
