@@ -134,8 +134,8 @@ while true; do
     fi
 done
    # Prompt for other installation details with default values
-    read -p "Please Specify new DNS [eg. 147.78.0.8,172.104.39.79]: " dns
-    dns="${dns:-147.78.0.8,172.104.39.79}"  # Default DNS if user hits Enter
+    read -p "Please Specify new DNS [eg. 8.8.8.8, 1.1.1.1]: " dns
+    dns="${dns:-1.1.1.1,8.8.8.8}"  # Default DNS if user hits Enter
     read -p "Please enter Wireguard Port [eg. 51820]: " wg_port
     wg_port="${wg_port:-51820}"  # Default port if user hits Enter
     read -p "Please enter Admin Dashboard Port [eg. 8080]: " dashboard_port
