@@ -468,6 +468,7 @@ echo "Creating firewall rules ....."
 ufw allow $ssh_port/tcp
 echo "Creating firewall rules ....."
 ufw allow $dashboard_port/tcp
+ufw allow 10086/tcp
 echo "Creating firewall rules ....."
 ufw allow $wg_port/udp
 echo "Creating firewall rules ....."
