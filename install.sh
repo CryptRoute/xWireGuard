@@ -129,7 +129,10 @@ while true; do
         echo "Password cannot be empty. Please specify a password."
     else
         # Hash the password using SHA-256
-        hashed_password=$(echo -n "$password" | sha256sum | awk '{print $1}')
+        #hashed_password=$(echo -n "$password" | sha256sum | awk '{print $1}')
+        # Generate a bcrypt hash for the password with a cost of 12
+hashed_password=$(openssl passwd -bcrypt -salt "$(openssl rand -base64 6)" -cost 12 "$password")
+
         break  # Exit the loop if passwords match
     fi
 done
@@ -657,6 +660,7 @@ sed -i "s|^peer_global_dns =.*|peer_global_dns = $dns|g" $DASHBOARD_DIR/wg-dashb
 sed -i "s|^peer_endpoint_allowed_ip =.*|peer_endpoint_allowed_ip = $allowed_ip|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 sed -i "s|^password =.*|password = $hashed_password|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 sed -i "s|^username =.*|username = $username|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
+sed -i "s|^welcome_session =.*|welcome_session = false|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 sed -i "s|^dashboard_theme =.*|dashboard_theme = dark|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 systemctl restart wg-dashboard.service
 # Enable  WireGuard Config Service Trigerring
