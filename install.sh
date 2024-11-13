@@ -131,7 +131,7 @@ while true; do
         # Hash the password using SHA-256
         #hashed_password=$(echo -n "$password" | sha256sum | awk '{print $1}')
         # Generate a bcrypt hash for the password with a cost of 12
-hashed_password=$(openssl passwd -bcrypt -salt "$(openssl rand -base64 6)" -cost 12 "$password")
+        #hashed_password=$(openssl passwd -bcrypt -salt "$(openssl rand -base64 6)" -cost 12 "$password")
 
         break  # Exit the loop if passwords match
     fi
@@ -408,6 +408,13 @@ if [[ "$(echo "$python_version" | cut -d. -f1)" -lt 3 || "$(echo "$python_versio
 else
     echo "Python version is 3.7 or above."
 fi
+# Check if bcrypt is installed
+if ! python3 -c "import bcrypt" &> /dev/null; then
+    echo "bcrypt is not installed. Installing bcrypt..."
+    pip install bcrypt
+else
+    echo "bcrypt is already installed."
+fi
 # Check for WireGuard dependencies and install them if not present
 if ! check_dpkg_package_installed wireguard-tools; then
     echo "Installing WireGuard dependencies..."
@@ -655,6 +662,7 @@ systemctl restart wg-dashboard.service
 # Enable and start WG0 Monitor service
 systemctl enable wgmonitor.service --quiet
 systemctl start  wgmonitor.service
+hashed_password=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$password', bcrypt.gensalt(12)).decode())")
 # Seed to wg-dashboard.ini
 sed -i "s|^app_port =.*|app_port = $dashboard_port|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 sed -i "s|^peer_global_dns =.*|peer_global_dns = $dns|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
