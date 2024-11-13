@@ -545,7 +545,7 @@ fi
 cd xwireguard || exit
 # Install WGDashboard
 echo "Installing WGDashboard ....."
-git clone  -q -b https://github.com/donaldzou/WGDashboard.git wgdashboard
+git clone  -q https://github.com/donaldzou/WGDashboard.git wgdashboard
 cd wgdashboard/src
 #apt install python3-pip -y && pip install gunicorn && pip install -r requirements.txt --ignore-installed
 apt install python3-pip -y >/dev/null 2>&1 && pip install gunicorn >/dev/null 2>&1 && pip install -r requirements.txt --ignore-installed >/dev/null 2>&1
