@@ -408,10 +408,18 @@ if [[ "$(echo "$python_version" | cut -d. -f1)" -lt 3 || "$(echo "$python_versio
 else
     echo "Python version is 3.7 or above."
 fi
+
+# Check if pip is installed
+if ! command -v pip &> /dev/null; then
+    echo "pip is not installed. Installing pip..."
+    apt update
+    apt install -y python3-pip >/dev/null 2>&1
+fi
+
 # Check if bcrypt is installed
 if ! python3 -c "import bcrypt" &> /dev/null; then
     echo "bcrypt is not installed. Installing bcrypt..."
-    pip install bcrypt
+    pip install bcrypt >/dev/null 2>&1
 else
     echo "bcrypt is already installed."
 fi
