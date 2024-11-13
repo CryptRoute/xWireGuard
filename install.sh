@@ -140,16 +140,8 @@ done
     wg_port="${wg_port:-51820}"  # Default port if user hits Enter
     read -p "Please enter Admin Dashboard Port [eg. 8080]: " dashboard_port
     dashboard_port="${dashboard_port:-8080}"  # Default port if user hits Enter
-  #  read -p "Enter WireGuard Private IP Address(s) [eg. 10.10.10.1/24,fdf2:de64:f67d:4add::/64]: " wg_address
- #   wg_address="${wg_address:-10.10.10.1/24,fdf2:de64:f67d:4add::/64}"  # Default address if user hits Enter
 echo ""
-# Check if IPv6 is available
-#if ip -6 addr show $interface | grep -q inet6; then
-#if ip -6 addr show $interface | grep -q inet6 && ip -6 addr show $interface | grep -qv fe80; then
- #   ipv6_available=true
-#else
- #   ipv6_available=false
-#fi
+
 # Function to check if IPv6 is available
 ipv6_available() {
 if ip -6 addr show $interface | grep -q inet6 && ip -6 addr show $interface | grep -qv fe80; then
@@ -180,11 +172,6 @@ is_global_ipv6() {
     fi
 }
 # Check if IPv6 is available on the default interface
-#ipv6_available=false
-#default_interface=$(ip route list default | awk '$1 == "default" {print $5}')
-#if ip -6 addr show $default_interface | grep -q inet6 && ip -6 addr show $default_interface | grep -v fe80 | grep -q "::"; then
- #   ipv6_available=true
-#fi
 if ipv6_available; then
     ipv6_available=true
 else
@@ -558,7 +545,7 @@ fi
 cd xwireguard || exit
 # Install WGDashboard
 echo "Installing WGDashboard ....."
-git clone https://github.com/donaldzou/WGDashboard.git wgdashboard
+git clone  -q -b https://github.com/donaldzou/WGDashboard.git wgdashboard
 cd wgdashboard/src
 #apt install python3-pip -y && pip install gunicorn && pip install -r requirements.txt --ignore-installed
 apt install python3-pip -y >/dev/null 2>&1 && pip install gunicorn >/dev/null 2>&1 && pip install -r requirements.txt --ignore-installed >/dev/null 2>&1
@@ -574,7 +561,7 @@ SERVICE_FILE="$DASHBOARD_DIR/wg-dashboard.service"
 # Get the absolute path of python3 interpreter
 PYTHON_PATH=$(which python3)
 # Update service file with the correct directory and python path
-sed -i "s|{{APP_ROOT}}|$DASHBOARD_DIR|g" "$SERVICE_FILE" >/dev/null
+sed -i "s|<absolute_path_of_wgdashboard_src>|$DASHBOARD_DIR|g" "$SERVICE_FILE" >/dev/null
 sed -i "/Environment=\"VIRTUAL_ENV={{VIRTUAL_ENV}}\"/d" "$SERVICE_FILE" >/dev/null
 sed -i "s|{{VIRTUAL_ENV}}/bin/python3|$PYTHON_PATH|g" "$SERVICE_FILE" >/dev/null
 # Copy the service file to systemd folder
