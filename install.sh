@@ -403,8 +403,8 @@ apt update -y  >/dev/null 2>&1
 
 # Check if lsb_release is available; install if missing
 if ! command -v lsb_release &> /dev/null; then
-    sudo apt update
-    sudo apt install -y lsb-release >/dev/null 2>&1
+     apt update
+     apt install -y lsb-release >/dev/null 2>&1
 fi
 
 # Detect the OS distribution and version
@@ -413,9 +413,9 @@ version=$(lsb_release -rs)
 
 if [[ "$distro" == "Ubuntu" && "$version" == "20.04" ]]; then
     echo "Detected Ubuntu 20.04 LTS. Installing Python 3.10 and WireGuard dependencies..."
-    sudo add-apt-repository ppa:deadsnakes/ppa -y >/dev/null 2>&1
-    sudo apt-get update -y >/dev/null 2>&1
-    sudo apt-get install -y python3.10 python3.10-distutils wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
+     add-apt-repository ppa:deadsnakes/ppa -y >/dev/null 2>&1
+     apt-get update -y >/dev/null 2>&1
+     apt-get install -y python3.10 python3.10-distutils wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
 
 elif [[ ( "$distro" == "Ubuntu" && ( "$version" == "22.04" || "$version" == "24.02" ) ) || ( "$distro" == "Debian" && "$version" == "12" ) ]]; then
     echo "Detected $distro $version. Proceeding with installation..."
@@ -449,7 +449,7 @@ elif [[ "$distro" == "Debian" && "$version" == "11" ]]; then
     echo "Detected Debian 11. Installing Python 3.10 and WireGuard dependencies..."
     echo "Please wait."
     # Suppress output of the apt installation
-    sudo apt install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
+     apt install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
     libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev wireguard-tools \
     net-tools >/dev/null 2>&1
     echo "Please wait.."
@@ -461,11 +461,11 @@ elif [[ "$distro" == "Debian" && "$version" == "11" ]]; then
     cd Python-3.10.0
     echo "Please wait...."
     # Suppress output of the configure, make, and make install commands
-    sudo ./configure --enable-optimizations >/dev/null 2>&1
+     ./configure --enable-optimizations >/dev/null 2>&1
     echo "Please wait....."
-    sudo make >/dev/null 2>&1
+     make >/dev/null 2>&1
     echo "Please wait......"
-    sudo make altinstall >/dev/null 2>&1
+     make altinstall >/dev/null 2>&1
     echo "Python installation...... success"
 else
 
