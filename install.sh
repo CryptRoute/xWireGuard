@@ -465,6 +465,8 @@ elif [[ "$distro" == "Debian" && "$version" == "11" ]]; then
     echo "Please wait....."
      make >/dev/null 2>&1
     echo "Please wait......"
+    echo "Please wait...... Upgrading Python to v3.10 could take a while"
+    echo "Please wait......"
      make altinstall >/dev/null 2>&1
     echo "Python installation...... success"
 else
@@ -546,7 +548,7 @@ echo "Creating firewall rules ....."
 ufw allow 10086/tcp
 echo "Creating ($ssh_port) firewall rules ....."
 ufw allow $ssh_port/tcp
-echo "Creating ($dashboard_por) firewall rules ....."
+echo "Creating ($dashboard_port) firewall rules ....."
 ufw allow $dashboard_port/tcp
 ufw allow 10086/tcp
 echo "Creating ($wg_port) firewall rules ....."
