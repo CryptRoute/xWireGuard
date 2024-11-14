@@ -13,14 +13,28 @@ check_dpkg_package_installed() {
 # Check if curl is installed
 if ! check_dpkg_package_installed curl; then
     echo "Installing curl..."
-    apt update -y >/dev/null 2>&1
+    apt update -y 
     apt install -y curl >/dev/null 2>&1
 fi
 # Check if wget is installed
 if ! check_dpkg_package_installed wget; then
     echo "Installing wget..."
-    apt update -y
+    apt update -y 
     apt install -y wget >/dev/null 2>&1
+fi
+
+# Check if git is installed
+if ! check_dpkg_package_installed git; then
+    echo "Installing git..."
+    apt update -y 
+    apt install -y git >/dev/null 2>&1
+fi
+
+# Check if git is installed
+if ! check_dpkg_package_installed sudo; then
+    echo "Installing sudo..."
+    apt update -y 
+    apt install -y sudo >/dev/null 2>&1
 fi
 # Clear screen
 clear
@@ -34,13 +48,13 @@ echo "  _|_|_|              _|    _|_|_|  _|_|_|_|    _|_|_|  _|        _|"
 echo ""
 echo "                                  xWireGuard Management & Server"
 echo ""
-echo -e "\e[1;31mWARNING ! Install only in Ubuntu 20.10, Ubuntu 20.04, Ubuntu 22.04 & Debian 11 system ONLY\e[0m"
-echo -e "\e[32mRECOMMENDED ==> Ubuntu 20.10 \e[0m"
+echo -e "\e[1;31mWARNING ! Install only in Ubuntu 20.04, Ubuntu 22.04, Ubuntu 24.10 & Debian 11 & 12 system ONLY\e[0m"
+echo -e "\e[32mRECOMMENDED ==> Ubuntu 22.04 \e[0m"
 echo ""
 echo "The following software will be installed on your system:"
 echo "   - Wire Guard Server"
 echo "   - WireGuard-Tools"
-echo "   - WGDashboard by donaldzou (v3.1-dev)"
+echo "   - WGDashboard by donaldzou"
 echo "   - Gunicorn WSGI Server"
 echo "   - Python3-pip"
 echo "   - Git"
@@ -321,7 +335,7 @@ else
     ipv6_available=false
 fi
 # Prompt for IP version selection 
-#PS3="Choose IP version: "
+echo "Select an option for preferred IP version: "
 PS3="Select an option: "
 options=("Public IPv4")
 if [ "$ipv6_available" = true ]; then
@@ -385,34 +399,85 @@ hostnamectl set-hostname "$hostname"
 echo "Updating Repo & System..."
 echo "Please wait to complete process..."
 apt update -y  >/dev/null 2>&1
-# Check if Python 3 is installed
-if ! check_dpkg_package_installed python3; then
-    echo "Python 3 is not installed. Installing Python 3..."
-    # Install Python 3 system-wide
-    apt install -y python3 >/dev/null 2>&1
-    # Make Python 3 the default version
-    update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+
+
+# Check if lsb_release is available; install if missing
+if ! command -v lsb_release &> /dev/null; then
+    sudo apt update
+    sudo apt install -y lsb-release >/dev/null 2>&1
 fi
-# Function to check the version of Python installed
-get_python_version() {
-    python3 --version | awk '{print $2}'
-}
-# Check the Python version
-python_version=$(get_python_version)
-# Compare the Python version
-if [[ "$(echo "$python_version" | cut -d. -f1)" -lt 3 || "$(echo "$python_version" | cut -d. -f2)" -lt 7 ]]; then
-    echo "Python version is below 3.7. Upgrading Python..."
-    # Perform the system upgrade of Python
-    apt update -y  >/dev/null 2>&1
-    apt install -y python3 >/dev/null 2>&1
+
+# Detect the OS distribution and version
+distro=$(lsb_release -is)
+version=$(lsb_release -rs)
+
+if [[ "$distro" == "Ubuntu" && "$version" == "20.04" ]]; then
+    echo "Detected Ubuntu 20.04 LTS. Installing Python 3.10 and WireGuard dependencies..."
+    sudo add-apt-repository ppa:deadsnakes/ppa -y >/dev/null 2>&1
+    sudo apt-get update -y >/dev/null 2>&1
+    sudo apt-get install -y python3.10 python3.10-distutils wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
+
+elif [[ ( "$distro" == "Ubuntu" && ( "$version" == "22.04" || "$version" == "24.02" ) ) || ( "$distro" == "Debian" && "$version" == "12" ) ]]; then
+    echo "Detected $distro $version. Proceeding with installation..."
+        # Check if Python 3 is installed
+        if ! check_dpkg_package_installed python3; then
+            echo "Python 3 is not installed. Installing Python 3..."
+            # Install Python 3 system-wide
+            apt install -y python3 >/dev/null 2>&1
+            # Make Python 3 the default version
+            update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+        fi
+        # Function to check the version of Python installed
+        get_python_version() {
+            python3 --version | awk '{print $2}'
+        }
+        # Check the Python version
+        python_version=$(get_python_version)
+        # Compare the Python version
+       #if [[ "$(echo "$python_version" | cut -d. -f1)" -lt 3 || "$(echo "$python_version" | cut -d. -f2)" -lt 7 ]]; then
+        if [[ "$(echo "$python_version" | cut -d. -f1)" -lt 3 || ( "$(echo "$python_version" | cut -d. -f1)" -eq 3 && "$(echo "$python_version" | cut -d. -f2)" -lt 10 ) ]]; then
+
+            echo "Python version is below 3.10. Upgrading Python..."
+            # Perform the system upgrade of Python
+            apt update -y  >/dev/null 2>&1
+            apt install -y python3 >/dev/null 2>&1
+        else
+            echo "Python version is 3.10 or above."
+        fi
+
+elif [[ "$distro" == "Debian" && "$version" == "11" ]]; then
+    echo "Detected Debian 11. Installing Python 3.10 and WireGuard dependencies..."
+    echo "Please wait."
+    # Suppress output of the apt installation
+    sudo apt install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
+    libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev wireguard-tools \
+    net-tools >/dev/null 2>&1
+    echo "Please wait.."
+    # Download Python source and suppress output
+    wget https://www.python.org/ftp/python/3.10.0/Python-3.10.0.tgz -q
+    echo "Please wait..."
+    # Extract Python source and suppress output
+    tar -xvf Python-3.10.0.tgz >/dev/null 2>&1
+    cd Python-3.10.0
+    echo "Please wait...."
+    # Suppress output of the configure, make, and make install commands
+    sudo ./configure --enable-optimizations >/dev/null 2>&1
+    echo "Please wait....."
+    sudo make >/dev/null 2>&1
+    echo "Please wait......"
+    sudo make altinstall >/dev/null 2>&1
+    echo "Python installation...... success"
 else
-    echo "Python version is 3.7 or above."
+
+    echo "This script only supports Ubuntu 20.04 LTS and Debian 11."
+    exit 1
 fi
+
 
 # Check if pip is installed
 if ! command -v pip &> /dev/null; then
     echo "pip is not installed. Installing pip..."
-    apt update
+    apt update >/dev/null 2>&1
     apt install -y python3-pip >/dev/null 2>&1
 fi
 
@@ -479,18 +544,18 @@ echo "Stopping firewall (UFW) ....."
 ufw disable
 echo "Creating firewall rules ....."
 ufw allow 10086/tcp
-echo "Creating firewall rules ....."
+echo "Creating ($ssh_port) firewall rules ....."
 ufw allow $ssh_port/tcp
-echo "Creating firewall rules ....."
+echo "Creating ($dashboard_por) firewall rules ....."
 ufw allow $dashboard_port/tcp
 ufw allow 10086/tcp
-echo "Creating firewall rules ....."
+echo "Creating ($wg_port) firewall rules ....."
 ufw allow $wg_port/udp
-echo "Creating firewall rules ....."
+echo "Creating (53) firewall rules ....."
 ufw allow 53/udp
-echo "Creating firewall rules ....."
+echo "Creating (OpenSSH) firewall rules ....."
 ufw allow OpenSSH
-echo "Creating firewall rules ....."
+echo "Enabling firewall rules ....."
 ufw --force enable
 mkdir /etc/wireguard/network
 iptables_script="/etc/wireguard/network/iptables.sh"
