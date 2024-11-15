@@ -735,8 +735,8 @@ chmod +x /etc/xwireguard/monitor/check_wg_config.sh
 systemctl enable wg-dashboard.service --quiet
 systemctl restart wg-dashboard.service
 # Enable and start WG0 Monitor service
-systemctl enable wgmonitor.service --quiet
-systemctl start  wgmonitor.service
+#systemctl enable wgmonitor.service --quiet
+#systemctl start  wgmonitor.service
 hashed_password=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$password', bcrypt.gensalt(12)).decode())")
 # Seed to wg-dashboard.ini
 sed -i "s|^app_port =.*|app_port = $dashboard_port|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
@@ -748,32 +748,35 @@ sed -i "s|^welcome_session =.*|welcome_session = false|g" $DASHBOARD_DIR/wg-dash
 sed -i "s|^dashboard_theme =.*|dashboard_theme = dark|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 systemctl restart wg-dashboard.service
 # Enable  WireGuard Config Service Trigerring
-systemctl enable check_wg_config.service --quiet
-systemctl start  check_wg_config.service
+#systemctl enable check_wg_config.service --quiet
+#systemctl start  check_wg_config.service
 
 # Check if the services restarted successfully
-echo "Restarting Wireguard,  WGDashboard &  WGConfig Monitoring services ....."
+#echo "Restarting Wireguard,  WGDashboard &  WGConfig Monitoring services ....."
+echo "Restarting Wireguard & WGDashboard services ....."
+
     echo ""
 # Define the cron commands
-cron_command_reboot="@reboot root /etc/xwireguard/monitor/check_wg_config.sh"
-cron_command_every_minute="* * * * * /etc/xwireguard/monitor/check_wg_config.sh"
+# temporarily disabled for now
+#cron_command_reboot="@reboot root /etc/xwireguard/monitor/check_wg_config.sh"
+#cron_command_every_minute="* * * * * /etc/xwireguard/monitor/check_wg_config.sh"
 # Add the cron commands to the root user's crontab
-{ crontab -l -u root 2>/dev/null; echo "$cron_command_reboot"; echo "$cron_command_every_minute"; } | crontab -u root -
+#{ crontab -l -u root 2>/dev/null; echo "$cron_command_reboot"; echo "$cron_command_every_minute"; } | crontab -u root -
 # Check if the cron commands were added successfully
-if crontab -l -u root | grep -q "$cron_command_reboot" && crontab -l -u root | grep -q "$cron_command_every_minute"; then
-    echo "Cron jobs created successfully WGConfig Monitoring services."
-else
-    echo "Failed to add cron jobs for WGConfig Monitoring services."
-fi
+#if crontab -l -u root | grep -q "$cron_command_reboot" && crontab -l -u root | grep -q "$cron_command_every_minute"; then
+#    echo "Cron jobs created successfully WGConfig Monitoring services."
+#else
+#    echo "Failed to add cron jobs for WGConfig Monitoring services."
+#fi
     echo ""
 
 wg_status=$(systemctl is-active wg-quick@wg0.service)
 dashboard_status=$(systemctl is-active wg-dashboard.service)
-wgmonitor_status=$(systemctl is-active wgmonitor.service)
+#wgmonitor_status=$(systemctl is-active wgmonitor.service)
     echo ""
 echo "Wireguard Status: $wg_status"
 echo "WGDashboard Status: $dashboard_status"
-echo "WGConfig Monitor Status: $wgmonitor_status"
+#echo "WGConfig Monitor Status: $wgmonitor_status"
     echo ""
 
 
