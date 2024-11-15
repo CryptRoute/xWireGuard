@@ -592,8 +592,6 @@ cat <<EOF | tee -a /etc/wireguard/wg0.conf >/dev/null
 PrivateKey = $private_key
 Address = $ipv4_address_pvt, $ipv6_address_pvt
 ListenPort = $wg_port
-MTU = 1420
-SaveConfig = true
 EOF
 else
  # Add Wireguard configuration
@@ -602,8 +600,6 @@ cat <<EOF | tee -a /etc/wireguard/wg0.conf >/dev/null
 PrivateKey = $private_key
 Address = $ipv4_address_pvt
 ListenPort = $wg_port
-MTU = 1420
-SaveConfig = true
 EOF
 fi
 echo "Setting up Wireguard configuration ....."
