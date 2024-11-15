@@ -494,7 +494,8 @@ elif [[ "$distro" == "Debian" && "$version" == "11" ]]; then
     echo "Python installation...... success"
 else
 
-    echo "This script only supports Ubuntu 20.04 LTS and Debian 11."
+    echo "This script supports only Ubuntu 20.04 LTS, 22.04, 24.02, and Debian 11 & 12."
+    echo "Your version, $distro $version, is not supported at this time."
     exit 1
 fi
 
