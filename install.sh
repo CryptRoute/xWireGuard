@@ -685,89 +685,11 @@ sed -i "s|{{VIRTUAL_ENV}}/bin/python3|$PYTHON_PATH|g" "$SERVICE_FILE" >/dev/null
 cp "$SERVICE_FILE" /etc/systemd/system/wg-dashboard.service
 # Set permissions
 chmod 664 /etc/systemd/system/wg-dashboard.service
-cat <<'EOF_SCRIPT' | tee -a /etc/xwireguard/monitor/wg.sh >/dev/null
-#!/bin/bash
-# Define the path to the WireGuard config file
-WG_CONFIG="/etc/wireguard/wg0.conf"
-# Function to combine Address lines under the [Interface] section
-combine_addresses() {
-    awk '
-    $1 == "[Interface]" { print; iface=1; next }
-    iface && $1 == "Address" {
-        if (address == "") {
-            address = $3
-        } else {
-            address = address "," $3
-        }
-        next
-    }
-    iface && address != "" {
-        print "Address =", address
-        address = ""
-    }
-    { print }
-    END { if (address != "") print "Address =", address }
-    ' "$WG_CONFIG" > "$WG_CONFIG.tmp" && mv "$WG_CONFIG.tmp" "$WG_CONFIG"
-}
-# Sleep for 5 seconds to wait for potential modifications after reboot
-sleep 10
-# Monitor the config file for modifications and call the function to combine addresses
-while true; do
-    inotifywait -e modify "$WG_CONFIG"
-    combine_addresses
-    echo "WireGuard config file modified"
-done
-EOF_SCRIPT
-cat <<'EOF_SCRIPT' | tee /etc/xwireguard/monitor/check_wg_config.sh >/dev/null
-#!/bin/bash
-# Define the path to the WireGuard config file
-WG_CONFIG="/etc/wireguard/wg0.conf"
-# Function to check for double lines of "Address" and modify the file if necessary
-check_and_modify_wg_config() {
-    #if grep -q '^Address =' "$WG_CONFIG" && grep -q '^Address =' "$WG_CONFIG" <(tail -n +2 "$WG_CONFIG"); then
-        if [ "$(grep -c '^Address =' "$WG_CONFIG")" -gt 1 ]; then
-        # Double lines of "Address" found, perform modification
-        sed -i '$a #Wireguard IPv6 Monitoring Active on this file' "$WG_CONFIG"
-        echo "Double lines of 'Address' found and modified in $WG_CONFIG"
-        # Trigger inotifywait to detect the modification
-        touch "$WG_CONFIG"
-    else
-        echo "No double lines of 'Address' found in $WG_CONFIG"
-    fi
-}
-# Execute the function to check and modify the wg0.conf file
-check_and_modify_wg_config
-EOF_SCRIPT
-cat <<EOF | tee -a /etc/systemd/system/wgmonitor.service >/dev/null
-[Unit]
-Description=WireGuard Conf Monitor Service
-After=network.target
-[Service]
-Type=simple
-ExecStart=/etc/xwireguard/monitor/wg.sh
-Restart=always
-[Install]
-WantedBy=multi-user.target
-EOF
-cat <<EOF | tee -a /etc/systemd/system/check_wg_config.service >/dev/null
-[Unit]
-Description=Check and Modify WireGuard Config Service
-After=wg-dashboard.service
-Requires=wg-dashboard.service
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c '/bin/sleep 10 && /etc/xwireguard/monitor/check_wg_config.sh'
-[Install]
-WantedBy=multi-user.target
-EOF
-chmod +x /etc/xwireguard/monitor/wg.sh
-chmod +x /etc/xwireguard/monitor/check_wg_config.sh
+
 # Enable and start WGDashboard service
 systemctl enable wg-dashboard.service --quiet
 systemctl restart wg-dashboard.service
-# Enable and start WG0 Monitor service
-#systemctl enable wgmonitor.service --quiet
-#systemctl start  wgmonitor.service
+
 hashed_password=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$password', bcrypt.gensalt(12)).decode())")
 # Seed to wg-dashboard.ini
 sed -i "s|^app_port =.*|app_port = $dashboard_port|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
@@ -778,27 +700,10 @@ sed -i "s|^username =.*|username = $username|g" $DASHBOARD_DIR/wg-dashboard.ini 
 sed -i "s|^welcome_session =.*|welcome_session = false|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 sed -i "s|^dashboard_theme =.*|dashboard_theme = dark|g" $DASHBOARD_DIR/wg-dashboard.ini >/dev/null
 systemctl restart wg-dashboard.service
-# Enable  WireGuard Config Service Trigerring
-#systemctl enable check_wg_config.service --quiet
-#systemctl start  check_wg_config.service
 
-# Check if the services restarted successfully
-#echo "Restarting Wireguard,  WGDashboard &  WGConfig Monitoring services ....."
 echo "Restarting Wireguard & WGDashboard services ....."
 
     echo ""
-# Define the cron commands
-# temporarily disabled for now
-#cron_command_reboot="@reboot root /etc/xwireguard/monitor/check_wg_config.sh"
-#cron_command_every_minute="* * * * * /etc/xwireguard/monitor/check_wg_config.sh"
-# Add the cron commands to the root user's crontab
-#{ crontab -l -u root 2>/dev/null; echo "$cron_command_reboot"; echo "$cron_command_every_minute"; } | crontab -u root -
-# Check if the cron commands were added successfully
-#if crontab -l -u root | grep -q "$cron_command_reboot" && crontab -l -u root | grep -q "$cron_command_every_minute"; then
-#    echo "Cron jobs created successfully WGConfig Monitoring services."
-#else
-#    echo "Failed to add cron jobs for WGConfig Monitoring services."
-#fi
     echo ""
 
 wg_status=$(systemctl is-active wg-quick@wg0.service)
@@ -830,7 +735,7 @@ if [ "$wg_status" = "active" ] && [ "$dashboard_status" = "active" ]; then
 echo ""
 echo ""
 #echo "Rebooting system ......."
-#reboot
+reboot
 else
     echo "Error: Installation failed. Please check the services and try again."
 fi
