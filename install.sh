@@ -828,8 +828,8 @@ if [ "$wg_status" = "active" ] && [ "$dashboard_status" = "active" ]; then
 #systemctl restart wireguard-iptables.service
 echo ""
 echo ""
-echo "Rebooting system ......."
-reboot
+#echo "Rebooting system ......."
+#reboot
 else
     echo "Error: Installation failed. Please check the services and try again."
 fi
