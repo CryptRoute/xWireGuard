@@ -563,20 +563,29 @@ mkdir /etc/wireguard/network
 iptables_script="/etc/wireguard/network/iptables.sh"
 #sed -i "s|^ListenPort =.*|ListenPort = $wg_port|g" /etc/wireguard/wg0.conf
 if [[ -n $ipv6_address ]]; then
-    WG_Address="$ipv6_address_pvt,$ipv4_address_pvt"
-else
-    WG_Address="$ipv4_address_pvt"
-fi
-echo "Setting up Wireguard configuration ....."
 # Add Wireguard configuration
 cat <<EOF | tee -a /etc/wireguard/wg0.conf >/dev/null
 [Interface]
-Address = $WG_Address
+Address = $ipv4_address_pvt
+Address = $ipv6_address_pvt
 MTU = 1420
 SaveConfig = true
 ListenPort = $wg_port
 PrivateKey = $private_key
 EOF
+else
+ # Add Wireguard configuration
+cat <<EOF | tee -a /etc/wireguard/wg0.conf >/dev/null
+[Interface]
+Address = $ipv4_address_pvt
+MTU = 1420
+SaveConfig = true
+ListenPort = $wg_port
+PrivateKey = $private_key
+EOF
+fi
+echo "Setting up Wireguard configuration ....."
+
 # Add Wireguard Network configuration
 echo "Setting up Wireguard Network ....."
 ipv4_address_pvt0=$(convert_ipv4_format "$ipv4_address_pvt")
