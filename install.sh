@@ -253,10 +253,12 @@ generate_ipv6() {
     local range_type=$1
     case $range_type in
         1)
-            ipv6_address_pvt="FC00::$(printf '%02x%02x:%02x%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))/64"
+            # Fixed prefix FC00:: for Unique Local Addresses (ULA)
+            ipv6_address_pvt=$(printf "FC00:%04x:%04x::1/64" $((RANDOM % 65536)) $((RANDOM % 65536)))
             ;;
         2)
-            ipv6_address_pvt="FD00::$(printf '%02x%02x:%02x%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))/64"
+            # Fixed prefix FD00:: for Unique Local Addresses (ULA)
+            ipv6_address_pvt=$(printf "FD86:EA04:%04x::1/64" $((RANDOM % 65536)))
             ;;
         3)
             read -p "Enter custom Private IPv6 address: " ipv6_address_pvt
@@ -587,22 +589,21 @@ if [[ -n $ipv6_address ]]; then
 # Add Wireguard configuration
 cat <<EOF | tee -a /etc/wireguard/wg0.conf >/dev/null
 [Interface]
-Address = $ipv6_address_pvt
-Address = $ipv4_address_pvt
+PrivateKey = $private_key
+Address = $ipv4_address_pvt, $ipv6_address_pvt
+ListenPort = $wg_port
 MTU = 1420
 SaveConfig = true
-ListenPort = $wg_port
-PrivateKey = $private_key
 EOF
 else
  # Add Wireguard configuration
 cat <<EOF | tee -a /etc/wireguard/wg0.conf >/dev/null
 [Interface]
+PrivateKey = $private_key
 Address = $ipv4_address_pvt
+ListenPort = $wg_port
 MTU = 1420
 SaveConfig = true
-ListenPort = $wg_port
-PrivateKey = $private_key
 EOF
 fi
 echo "Setting up Wireguard configuration ....."
