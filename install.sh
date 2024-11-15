@@ -10,6 +10,17 @@ check_package_installed() {
 check_dpkg_package_installed() {
     dpkg -s "$1" >/dev/null 2>&1
 }
+# Function to validate the port number
+validate_port() {
+    local port=$1
+    # Check if the port is a valid number and within the range 1-65535
+    if [[ $port =~ ^[0-9]+$ ]] && ((port >= 1 && port <= 65535)); then
+        return 0  # Valid port
+    else
+        return 1  # Invalid port
+    fi
+}
+
 # Check if curl is installed
 if ! check_dpkg_package_installed curl; then
     echo "Installing curl..."
@@ -153,8 +164,18 @@ done
    # Prompt for other installation details with default values
     read -p "Please Specify new DNS [eg. 8.8.8.8, 1.1.1.1]: " dns
     dns="${dns:-1.1.1.1,8.8.8.8}"  # Default DNS if user hits Enter
-    read -p "Please enter Wireguard Port [eg. 51820]: " wg_port
-    wg_port="${wg_port:-51820}"  # Default port if user hits Enter
+    #read -p "Please enter Wireguard Port [eg. 51820]: " wg_port
+    #wg_port="${wg_port:-51820}"  # Default port if user hits Enter
+    # Loop to ensure a valid port is entered
+        while true; do
+            read -p "Please enter Wireguard Port [eg. 51820]: " wg_port
+            wg_port="${wg_port:-51820}"  # Default port if user hits Enter
+            if validate_port "$wg_port"; then
+                break  # Exit the loop if the port is valid
+            else
+                echo "Error: Invalid port. Please enter a number between 1 and 65535."
+            fi
+        done
     read -p "Please enter Admin Dashboard Port [eg. 8080]: " dashboard_port
     dashboard_port="${dashboard_port:-8080}"  # Default port if user hits Enter
 echo ""
