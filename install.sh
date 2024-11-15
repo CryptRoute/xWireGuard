@@ -587,8 +587,8 @@ if [[ -n $ipv6_address ]]; then
 # Add Wireguard configuration
 cat <<EOF | tee -a /etc/wireguard/wg0.conf >/dev/null
 [Interface]
-Address = $ipv4_address_pvt
 Address = $ipv6_address_pvt
+Address = $ipv4_address_pvt
 MTU = 1420
 SaveConfig = true
 ListenPort = $wg_port
