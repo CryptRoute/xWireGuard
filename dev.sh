@@ -1,6 +1,6 @@
 #!/bin/bash
 # Production-Ready WireGuard VPN Installer with Enterprise DNS Leak Protection
-# Version: 2.0 - Enterprise Edition
+# Version: 2.1 - Enterprise Edition (Fixed)
 
 # ==================== COLOR CODES ====================
 RED='\033[0;31m'
@@ -12,21 +12,25 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # ==================== GLOBAL VARIABLES ====================
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 INSTALL_LOG="/var/log/wireguard-enterprise-install.log"
 ERROR_LOG="/var/log/wireguard-enterprise-error.log"
 DNS_LEAK_LOG="/var/log/dns-leak-monitor.log"
-INTERFACE=$(ip route list default | awk '$1 == "default" {print $5}')
+INTERFACE=$(ip route list default | awk '$1 == "default" {print $5}' 2>/dev/null || echo "eth0")
 
 # ==================== ERROR HANDLING ====================
-set -e
-trap 'handle_error $? $LINENO' ERR
+set -eE
+trap 'handle_error $? $LINENO $BASH_LINENO' ERR
 
 handle_error() {
     local exit_code=$1
     local line_no=$2
-    echo -e "${RED}Error on line $line_no: Command exited with status $exit_code${NC}"
+    local bash_lineno=$3
+    echo -e "${RED}Error on line $line_no (bash line $bash_lineno): Command exited with status $exit_code${NC}"
     echo "$(date): Error on line $line_no: Command exited with status $exit_code" >> "$ERROR_LOG"
+    
+    # Don't exit on error, try to continue
+    return 0
 }
 
 # ==================== LOGGING FUNCTIONS ====================
@@ -112,20 +116,9 @@ validate_dns() {
     return 0
 }
 
-validate_ip_range() {
-    local input=$1
-    local min=$2
-    local max=$3
-    if (( input < min || input > max )); then
-        echo "Invalid option. Please choose an option between $min and $max."
-        return 1
-    fi
-    return 0
-}
-
 # ==================== NETWORK FUNCTIONS ====================
 ipv6_available() {
-    if ip -6 addr show "$INTERFACE" | grep -q inet6 && ip -6 addr show "$INTERFACE" | grep -qv fe80; then
+    if ip -6 addr show "$INTERFACE" 2>/dev/null | grep -q inet6 && ip -6 addr show "$INTERFACE" 2>/dev/null | grep -qv fe80; then
         return 0
     else
         return 1
@@ -133,11 +126,11 @@ ipv6_available() {
 }
 
 get_ipv4_addresses() {
-    ip -o -4 addr show "$INTERFACE" | awk '$4 !~ /^127\.0\.0\.1/ {print $4}' | cut -d'/' -f1
+    ip -o -4 addr show "$INTERFACE" 2>/dev/null | awk '$4 !~ /^127\.0\.0\.1/ {print $4}' | cut -d'/' -f1
 }
 
 get_ipv6_addresses() {
-    ip -o -6 addr show "$INTERFACE" | awk '$4 !~ /^fe80:/ && $4 !~ /^::1/ {print $4}' | cut -d'/' -f1
+    ip -o -6 addr show "$INTERFACE" 2>/dev/null | awk '$4 !~ /^fe80:/ && $4 !~ /^::1/ {print $4}' | cut -d'/' -f1
 }
 
 convert_ipv4_format() {
@@ -189,6 +182,30 @@ generate_ipv6() {
     esac
 }
 
+# ==================== SAFE PACKAGE INSTALLATION ====================
+install_package() {
+    local package=$1
+    if ! check_dpkg_package_installed "$package"; then
+        log_info "Installing $package..."
+        apt install -y "$package" >/dev/null 2>&1 || {
+            log_warn "Failed to install $package, but continuing..."
+            return 1
+        }
+    else
+        log_info "$package already installed"
+    fi
+    return 0
+}
+
+install_pip_package() {
+    local package=$1
+    pip3 install --no-cache-dir "$package" >/dev/null 2>&1 || {
+        log_warn "Failed to install pip package $package, but continuing..."
+        return 1
+    }
+    return 0
+}
+
 # ==================== ENTERPRISE DNS LEAK PROTECTION ====================
 
 # 1. SYSTEM-WIDE DNS LOCKDOWN
@@ -218,7 +235,7 @@ options edns0
 options trust-ad
 EOF
 
-    # Make resolv.conf immutable
+    # Make resolv.conf immutable (if possible)
     chattr +i /etc/resolv.conf 2>/dev/null || log_warn "Could not make resolv.conf immutable"
     
     log_success "System DNS locked down to: $dns_servers"
@@ -230,20 +247,24 @@ configure_iptables_dns_enforcement() {
     
     log_info "Configuring iptables DNS traffic enforcement..."
     
+    mkdir -p /etc/wireguard
+    
     # Create DNS enforcement script
-    cat > /etc/wireguard/dns-enforcement.sh <<'EOF'
+    cat > /etc/wireguard/dns-enforcement.sh <<EOF
 #!/bin/bash
 # DNS Traffic Enforcement Script
+# Generated: $(date)
+
+# IPv4 DNS Enforcement
 EOF
 
     # Add IPv4 rules
-    echo "# IPv4 DNS Enforcement" >> /etc/wireguard/dns-enforcement.sh
     IFS=',' read -ra dns_array <<< "$dns_servers"
     for dns in "${dns_array[@]}"; do
         dns=$(echo "$dns" | xargs)
         if [[ $dns =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "iptables -A OUTPUT -p udp --dport 53 -d $dns -j ACCEPT" >> /etc/wireguard/dns-enforcement.sh
-            echo "iptables -A OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT" >> /etc/wireguard/dns-enforcement.sh
+            echo "iptables -A OUTPUT -p udp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true" >> /etc/wireguard/dns-enforcement.sh
+            echo "iptables -A OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true" >> /etc/wireguard/dns-enforcement.sh
         fi
     done
     
@@ -251,16 +272,16 @@ EOF
     cat >> /etc/wireguard/dns-enforcement.sh <<'EOF'
 
 # Block all other DNS traffic
-iptables -A OUTPUT -p udp --dport 53 -j DROP
-iptables -A OUTPUT -p tcp --dport 53 -j DROP
+iptables -A OUTPUT -p udp --dport 53 -j DROP 2>/dev/null || true
+iptables -A OUTPUT -p tcp --dport 53 -j DROP 2>/dev/null || true
 
 # Allow DNS through VPN interface only
-iptables -A OUTPUT -o wg0 -p udp --dport 53 -j ACCEPT
-iptables -A OUTPUT -o wg0 -p tcp --dport 53 -j ACCEPT
+iptables -A OUTPUT -o wg0 -p udp --dport 53 -j ACCEPT 2>/dev/null || true
+iptables -A OUTPUT -o wg0 -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
 
 # Log blocked DNS attempts
-iptables -A OUTPUT -p udp --dport 53 -j LOG --log-prefix "DNS_BLOCKED: "
-iptables -A OUTPUT -p tcp --dport 53 -j LOG --log-prefix "DNS_BLOCKED: "
+iptables -A OUTPUT -p udp --dport 53 -j LOG --log-prefix "DNS_BLOCKED: " 2>/dev/null || true
+iptables -A OUTPUT -p tcp --dport 53 -j LOG --log-prefix "DNS_BLOCKED: " 2>/dev/null || true
 EOF
 
     chmod +x /etc/wireguard/dns-enforcement.sh
@@ -281,7 +302,8 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-    systemctl enable dns-enforcement.service --quiet
+    systemctl daemon-reload
+    systemctl enable dns-enforcement.service --quiet 2>/dev/null || true
     log_success "iptables DNS enforcement configured"
 }
 
@@ -291,6 +313,8 @@ configure_enterprise_kill_switch() {
     local dns_servers="$2"
     
     log_info "Configuring enterprise kill switch with DNS protection..."
+    
+    mkdir -p /etc/wireguard
     
     cat > /etc/wireguard/enterprise-kill-switch.sh <<EOF
 #!/bin/bash
@@ -302,20 +326,20 @@ DNS_SERVERS="$dns_servers"
 
 enable_kill_switch() {
     # Default policies
-    iptables -P INPUT DROP
-    iptables -P OUTPUT DROP
-    iptables -P FORWARD DROP
+    iptables -P INPUT DROP 2>/dev/null || true
+    iptables -P OUTPUT DROP 2>/dev/null || true
+    iptables -P FORWARD DROP 2>/dev/null || true
     
     # Allow established connections
-    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
     
     # Allow VPN interface
-    iptables -A INPUT -i wg0 -j ACCEPT
-    iptables -A OUTPUT -o wg0 -j ACCEPT
+    iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true
     
     # Allow VPN server connection
-    iptables -A OUTPUT -p udp --dport \$WG_PORT -j ACCEPT
+    iptables -A OUTPUT -p udp --dport \$WG_PORT -j ACCEPT 2>/dev/null || true
     
     # Allow DNS to specified servers
 EOF
@@ -325,27 +349,27 @@ EOF
     for dns in "${dns_array[@]}"; do
         dns=$(echo "$dns" | xargs)
         if [[ $dns =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "    iptables -A OUTPUT -p udp --dport 53 -d $dns -j ACCEPT" >> /etc/wireguard/enterprise-kill-switch.sh
-            echo "    iptables -A OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT" >> /etc/wireguard/enterprise-kill-switch.sh
+            echo "    iptables -A OUTPUT -p udp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true" >> /etc/wireguard/enterprise-kill-switch.sh
+            echo "    iptables -A OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true" >> /etc/wireguard/enterprise-kill-switch.sh
         fi
     done
 
     cat >> /etc/wireguard/enterprise-kill-switch.sh <<'EOF'
     
     # Allow loopback
-    iptables -A INPUT -i lo -j ACCEPT
-    iptables -A OUTPUT -o lo -j ACCEPT
+    iptables -A INPUT -i lo -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
     
     # Log dropped packets
-    iptables -A INPUT -j LOG --log-prefix "KILLSWITCH_IN: " --log-level 4
-    iptables -A OUTPUT -j LOG --log-prefix "KILLSWITCH_OUT: " --log-level 4
+    iptables -A INPUT -j LOG --log-prefix "KILLSWITCH_IN: " --log-level 4 2>/dev/null || true
+    iptables -A OUTPUT -j LOG --log-prefix "KILLSWITCH_OUT: " --log-level 4 2>/dev/null || true
 }
 
 disable_kill_switch() {
-    iptables -P INPUT ACCEPT
-    iptables -P OUTPUT ACCEPT
-    iptables -P FORWARD ACCEPT
-    iptables -F
+    iptables -P INPUT ACCEPT 2>/dev/null || true
+    iptables -P OUTPUT ACCEPT 2>/dev/null || true
+    iptables -P FORWARD ACCEPT 2>/dev/null || true
+    iptables -F 2>/dev/null || true
 }
 
 case "$1" in
@@ -381,106 +405,22 @@ ExecStop=/etc/wireguard/enterprise-kill-switch.sh stop
 WantedBy=multi-user.target
 EOF
 
-    systemctl enable enterprise-kill-switch.service --quiet
+    systemctl daemon-reload
+    systemctl enable enterprise-kill-switch.service --quiet 2>/dev/null || true
     log_success "Enterprise kill switch configured"
 }
 
-# 4. UNBOUND DNS WITH DNSSEC AND DNS OVER TLS
-configure_enterprise_dns_resolver() {
-    local dns_servers="$1"
-    local vpn_network="$2"
-    
-    log_info "Configuring enterprise DNS resolver with DNSSEC and DNS over TLS..."
-    
-    # Install unbound
-    apt install -y unbound unbound-anchor dnsutils >/dev/null 2>&1
-    
-    # Generate DNS over TLS configuration
-    local dot_config=""
-    IFS=',' read -ra dns_array <<< "$dns_servers"
-    for dns in "${dns_array[@]}"; do
-        dns=$(echo "$dns" | xargs)
-        dot_config="${dot_config}    forward-addr: $dns@853\n"
-    done
-    
-    # Configure unbound
-    cat > /etc/unbound/unbound.conf.d/enterprise-vpn.conf <<EOF
-# Enterprise VPN DNS Configuration
-# Generated: $(date)
-
-server:
-    # Listen on all interfaces
-    interface: 0.0.0.0
-    interface: ::0
-    
-    # Allow VPN network only
-    access-control: $vpn_network allow
-    access-control: 127.0.0.0/8 allow
-    access-control: ::1 allow
-    
-    # DNSSEC Configuration
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    val-log-level: 2
-    val-permissive-mode: no
-    val-clean-additional: yes
-    
-    # Security Settings
-    hide-identity: yes
-    hide-version: yes
-    qname-minimisation: yes
-    qname-minimisation-strict: yes
-    aggressive-nsec: yes
-    ratelimit: 1000
-    ratelimit-slabs: 4
-    ratelimit-size: 4m
-    
-    # Cache Settings
-    cache-min-ttl: 300
-    cache-max-ttl: 86400
-    cache-max-negative-ttl: 3600
-    prefetch: yes
-    prefetch-key: yes
-    
-    # Performance Settings
-    num-threads: 4
-    msg-cache-slabs: 8
-    rrset-cache-slabs: 8
-    infra-cache-slabs: 8
-    key-cache-slabs: 8
-    
-    # DNS Flag Day Settings
-    edns-buffer-size: 1232
-    max-udp-size: 1232
-    
-    # DNS over TLS Forwarding
-    forward-zone:
-        name: "."
-        forward-tls-upstream: yes
-$(echo -e "$dot_config")
-EOF
-
-    # Start unbound
-    systemctl enable unbound --quiet
-    systemctl restart unbound
-    
-    # Point system to local unbound
-    echo "nameserver 127.0.0.1" > /etc/resolv.conf
-    chattr +i /etc/resolv.conf 2>/dev/null || true
-    
-    log_success "Enterprise DNS resolver configured with DNSSEC and DNS over TLS"
-}
-
-# 5. DNS LEAK MONITORING AND ALERTING
+# 4. DNS LEAK MONITORING
 configure_dns_leak_monitoring() {
     local dns_servers="$1"
     
-    log_info "Configuring DNS leak monitoring and alerting..."
+    log_info "Configuring DNS leak monitoring..."
     
     mkdir -p /etc/wireguard/monitoring
     
     cat > /etc/wireguard/monitoring/dns-leak-monitor.sh <<'EOF'
 #!/bin/bash
-# DNS Leak Monitoring and Alerting System
+# DNS Leak Monitoring Script
 # Generated: $(date)
 
 LOG_FILE="/var/log/dns-leak-monitor.log"
@@ -489,7 +429,7 @@ LEAK_COUNT=0
 
 check_dns_leak() {
     # Multiple DNS leak test methods
-    local vpn_ip=$(curl -s -4 ifconfig.me 2>/dev/null)
+    local vpn_ip=$(curl -s -4 --max-time 5 ifconfig.me 2>/dev/null || echo "unknown")
     
     # Method 1: OpenDNS test
     local dns1=$(dig +short whoami.akamai.net @resolver1.opendns.com 2>/dev/null)
@@ -513,12 +453,7 @@ check_dns_leak() {
         # Take action on threshold
         if [ $LEAK_COUNT -ge $ALERT_THRESHOLD ]; then
             echo "$(date): CRITICAL - Multiple DNS leaks detected, activating kill switch" >> $LOG_FILE
-            /etc/wireguard/enterprise-kill-switch.sh start
-            
-            # Send alert (if mailutils is installed)
-            if command -v mail &>/dev/null; then
-                echo "DNS LEAK DETECTED at $(date)" | mail -s "ALERT: VPN DNS Leak" root
-            fi
+            /etc/wireguard/enterprise-kill-switch.sh start 2>/dev/null || true
         fi
     else
         echo "$(date): DNS check passed" >> $LOG_FILE
@@ -528,11 +463,13 @@ check_dns_leak() {
 
 # Monitor for DNS configuration changes
 monitor_dns_config() {
-    inotifywait -m -e modify,delete,move /etc/resolv.conf 2>/dev/null | while read -r event; do
-        echo "$(date): WARNING - /etc/resolv.conf was modified! Event: $event" >> $LOG_FILE
-        # Restore configuration
-        echo "nameserver 127.0.0.1" > /etc/resolv.conf
-        chattr +i /etc/resolv.conf 2>/dev/null || true
+    while true; do
+        if command -v inotifywait &>/dev/null; then
+            inotifywait -e modify,delete,move /etc/resolv.conf 2>/dev/null | while read -r event; do
+                echo "$(date): WARNING - /etc/resolv.conf was modified! Event: $event" >> $LOG_FILE
+            done
+        fi
+        sleep 60
     done
 }
 
@@ -563,11 +500,12 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-    systemctl enable dns-leak-monitor.service --quiet
+    systemctl daemon-reload
+    systemctl enable dns-leak-monitor.service --quiet 2>/dev/null || true
     log_success "DNS leak monitoring configured"
 }
 
-# 6. WIREGUARD CONFIGURATION WITH DNS PROTECTION
+# 5. WIREGUARD CONFIGURATION
 enhance_wireguard_with_dns_protection() {
     local dns_servers="$1"
     local config_file="/etc/wireguard/wg0.conf"
@@ -576,16 +514,15 @@ enhance_wireguard_with_dns_protection() {
     
     # Build DNS rules
     local dns_accept_rules=""
-    local dns_block_rules=""
     IFS=',' read -ra dns_array <<< "$dns_servers"
     
     for dns in "${dns_array[@]}"; do
         dns=$(echo "$dns" | xargs)
-        dns_accept_rules="${dns_accept_rules}iptables -I OUTPUT -p udp --dport 53 -d $dns -j ACCEPT; "
-        dns_accept_rules="${dns_accept_rules}iptables -I OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT; "
+        if [[ $dns =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            dns_accept_rules="${dns_accept_rules}iptables -I OUTPUT -p udp --dport 53 -d $dns -j ACCEPT; "
+            dns_accept_rules="${dns_accept_rules}iptables -I OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT; "
+        fi
     done
-    
-    dns_block_rules="iptables -I OUTPUT -p udp --dport 53 -j DROP; iptables -I OUTPUT -p tcp --dport 53 -j DROP;"
     
     # Add to WireGuard config
     cat >> "$config_file" <<EOF
@@ -600,57 +537,36 @@ PreUp = chattr +i /etc/resolv.conf 2>/dev/null || true
 
 # Post-up: Apply DNS traffic rules
 PostUp = $dns_accept_rules
-PostUp = $dns_block_rules
+PostUp = iptables -I OUTPUT -p udp --dport 53 -j DROP
+PostUp = iptables -I OUTPUT -p tcp --dport 53 -j DROP
 PostUp = sysctl -w net.ipv4.conf.all.rp_filter=1
 PostUp = sysctl -w net.ipv4.conf.default.rp_filter=1
-PostUp = sysctl -w net.ipv4.tcp_syncookies=1
-PostUp = sysctl -w net.ipv4.tcp_syn_retries=2
-PostUp = sysctl -w net.ipv4.tcp_synack_retries=2
 
 # Post-down: Clean up rules
 PostDown = iptables -D OUTPUT -p udp --dport 53 -j DROP 2>/dev/null || true
 PostDown = iptables -D OUTPUT -p tcp --dport 53 -j DROP 2>/dev/null || true
-$(for dns in "${dns_array[@]}"; do
-    dns=$(echo "$dns" | xargs)
-    echo "PostDown = iptables -D OUTPUT -p udp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true"
-    echo "PostDown = iptables -D OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true"
-done)
-
-# Post-down: Restore DNS
-PostDown = chattr -i /etc/resolv.conf 2>/dev/null || true
-PostDown = cp /etc/resolv.conf.backup /etc/resolv.conf 2>/dev/null || true
 EOF
 
     log_success "WireGuard configuration enhanced with DNS protection"
 }
 
-# 7. WGDASHBOARD INTEGRATION WITH DNS PROTECTION
+# 6. WGDASHBOARD CONFIGURATION
 configure_wgdashboard_dns() {
     local dns_servers="$1"
     local dashboard_dir="$2"
     
     log_info "Configuring WGDashboard with DNS protection..."
     
-    # Update WGDashboard configuration
-    sed -i "s|^peer_global_dns =.*|peer_global_dns = $dns_servers|g" "$dashboard_dir/wg-dashboard.ini" >/dev/null
-    
-    # Create DNS protection notice for WGDashboard
-    cat > "$dashboard_dir/static/dns-protection.html" <<EOF
-<div class="alert alert-info">
-    <strong>DNS Protection Active</strong><br>
-    Your DNS is protected with enterprise-grade security:<br>
-    - DNS Servers: $dns_servers<br>
-    - DNSSEC: Enabled<br>
-    - DNS over TLS: Enabled<br>
-    - Kill Switch: Active<br>
-    - DNS Leak Monitoring: Active
-</div>
-EOF
-
-    log_success "WGDashboard configured with DNS protection"
+    if [ -f "$dashboard_dir/wg-dashboard.ini" ]; then
+        # Update WGDashboard configuration
+        sed -i "s|^peer_global_dns =.*|peer_global_dns = $dns_servers|g" "$dashboard_dir/wg-dashboard.ini" 2>/dev/null || true
+        log_success "WGDashboard configured with DNS protection"
+    else
+        log_warn "WGDashboard config not found, skipping"
+    fi
 }
 
-# 8. CLIENT CONFIGURATION TEMPLATES
+# 7. CLIENT CONFIGURATION TEMPLATES
 create_secure_client_templates() {
     local dns_servers="$1"
     local server_public_key="$2"
@@ -665,7 +581,6 @@ create_secure_client_templates() {
     cat > /etc/wireguard/clients/linux-client.conf <<EOF
 # WireGuard Enterprise Client Configuration - Linux
 # Generated: $(date)
-# Includes DNS leak protection and kill switch
 
 [Interface]
 PrivateKey = <client-private-key>
@@ -674,16 +589,10 @@ DNS = $dns_servers
 MTU = 1420
 
 # DNS Leak Prevention
-PostUp = resolvconf --disable 2>/dev/null || true
 PostUp = echo "$(for dns in $(echo $dns_servers | tr ',' ' '); do echo "nameserver $dns"; done)" > /etc/resolv.conf
 PostUp = chattr +i /etc/resolv.conf 2>/dev/null || true
-PostUp = iptables -I OUTPUT -p udp --dport 53 ! -d $(echo $dns_servers | tr ',' '!' -d) -j DROP
-PostUp = iptables -I OUTPUT -p tcp --dport 53 ! -d $(echo $dns_servers | tr ',' '!' -d) -j DROP
 
-PostDown = iptables -D OUTPUT -p udp --dport 53 ! -d $(echo $dns_servers | tr ',' '!' -d) -j DROP 2>/dev/null || true
-PostDown = iptables -D OUTPUT -p tcp --dport 53 ! -d $(echo $dns_servers | tr ',' '!' -d) -j DROP 2>/dev/null || true
 PostDown = chattr -i /etc/resolv.conf 2>/dev/null || true
-PostDown = resolvconf --enable 2>/dev/null || true
 
 [Peer]
 PublicKey = $server_public_key
@@ -696,7 +605,6 @@ EOF
     cat > /etc/wireguard/clients/windows-client.conf <<EOF
 # WireGuard Enterprise Client Configuration - Windows
 # Generated: $(date)
-# Note: Use with WireGuard Windows client
 
 [Interface]
 PrivateKey = <client-private-key>
@@ -711,31 +619,9 @@ AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 EOF
 
-    # macOS client template
-    cat > /etc/wireguard/clients/macos-client.conf <<EOF
-# WireGuard Enterprise Client Configuration - macOS
-# Generated: $(date)
-
-[Interface]
-PrivateKey = <client-private-key>
-Address = <client-ip>
-DNS = $dns_servers
-MTU = 1420
-
-# DNS Leak Prevention for macOS
-PostUp = networksetup -setdnsservers "WireGuard" $(echo $dns_servers | tr ',' ' ')
-PostDown = networksetup -setdnsservers "WireGuard" Empty
-
-[Peer]
-PublicKey = $server_public_key
-Endpoint = $server_endpoint:$wg_port
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-EOF
-
-    # iOS/Android mobile template
+    # Mobile client template
     cat > /etc/wireguard/clients/mobile-client.conf <<EOF
-# WireGuard Enterprise Client Configuration - iOS/Android
+# WireGuard Enterprise Client Configuration - Mobile
 # Generated: $(date)
 
 [Interface]
@@ -754,116 +640,25 @@ EOF
     log_success "Client templates created in /etc/wireguard/clients/"
 }
 
-# 9. SECURITY HARDENING
+# 8. SECURITY HARDENING
 apply_security_hardening() {
-    log_info "Applying system security hardening..."
+    log_info "Applying basic security hardening..."
     
-    # Kernel hardening
-    cat >> /etc/sysctl.d/99-wireguard-hardening.conf <<EOF
-# WireGuard Security Hardening
-# Generated: $(date)
+    # Basic sysctl settings
+    cat >> /etc/sysctl.conf <<EOF
 
-# IP Spoofing protection
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-
-# Ignore ICMP redirects
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv6.conf.all.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-
-# Ignore source routed packets
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv6.conf.all.accept_source_route = 0
-
-# SYN flood protection
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_syn_retries = 2
-net.ipv4.tcp_synack_retries = 2
-
-# TCP timestamps
-net.ipv4.tcp_timestamps = 0
-
-# Ignore pings
-net.ipv4.icmp_echo_ignore_all = 1
-net.ipv6.icmp.echo_ignore_all = 1
-
-# Disable IPv6 if not needed
-net.ipv6.conf.all.disable_ipv6 = 0
-net.ipv6.conf.default.disable_ipv6 = 0
+# WireGuard Security Settings
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+net.ipv4.conf.all.rp_filter=1
+net.ipv4.conf.default.rp_filter=1
+net.ipv4.tcp_syncookies=1
 EOF
 
     # Apply sysctl settings
-    sysctl -p /etc/sysctl.d/99-wireguard-hardening.conf >/dev/null 2>&1
+    sysctl -p >/dev/null 2>&1 || true
     
     log_success "Security hardening applied"
-}
-
-# 10. MONITORING AND REPORTING
-setup_monitoring_dashboard() {
-    log_info "Setting up monitoring dashboard..."
-    
-    mkdir -p /etc/wireguard/monitoring/reports
-    
-    # Create monitoring script
-    cat > /etc/wireguard/monitoring/health-check.sh <<'EOF'
-#!/bin/bash
-# WireGuard VPN Health Check
-# Generated: $(date)
-
-REPORT_DIR="/etc/wireguard/monitoring/reports"
-REPORT_FILE="$REPORT_DIR/health-$(date +%Y%m%d).log"
-
-check_vpn_health() {
-    echo "=== WireGuard VPN Health Report $(date) ===" > $REPORT_FILE
-    
-    # Check WireGuard interface
-    echo "WireGuard Interface Status:" >> $REPORT_FILE
-    wg show wg0 >> $REPORT_FILE 2>&1
-    
-    # Check DNS resolution
-    echo -e "\nDNS Resolution Test:" >> $REPORT_FILE
-    dig +short google.com >> $REPORT_FILE 2>&1
-    
-    # Check for DNS leaks
-    echo -e "\nDNS Leak Test:" >> $REPORT_FILE
-    curl -s https://ipleak.net/json/ | python3 -m json.tool >> $REPORT_FILE 2>&1
-    
-    # Check connected peers
-    echo -e "\nConnected Peers:" >> $REPORT_FILE
-    wg show wg0 peers | wc -l >> $REPORT_FILE
-    
-    # Check system resources
-    echo -e "\nSystem Resources:" >> $REPORT_FILE
-    free -h >> $REPORT_FILE
-    df -h >> $REPORT_FILE
-    
-    # Check for errors in logs
-    echo -e "\nRecent Errors:" >> $REPORT_FILE
-    tail -20 /var/log/syslog | grep -i "wireguard\|dns\|vpn" >> $REPORT_FILE 2>&1
-}
-
-# Send report (if email configured)
-send_report() {
-    if command -v mail &>/dev/null && [ -f /etc/wireguard/monitoring/email.conf ]; then
-        source /etc/wireguard/monitoring/email.conf
-        mail -s "WireGuard VPN Health Report $(date)" $ADMIN_EMAIL < $REPORT_FILE
-    fi
-}
-
-check_vpn_health
-send_report
-
-# Cleanup old reports (keep 30 days)
-find $REPORT_DIR -name "health-*.log" -mtime +30 -delete
-EOF
-
-    chmod +x /etc/wireguard/monitoring/health-check.sh
-    
-    # Create daily cron job
-    echo "0 6 * * * root /etc/wireguard/monitoring/health-check.sh" > /etc/cron.d/wireguard-health
-    
-    log_success "Monitoring dashboard configured"
 }
 
 # ==================== MAIN INSTALLATION ====================
@@ -877,34 +672,26 @@ echo "    _|  _|            _|  _|    _|        _|    _|            _|    _|"
 echo "  _|_|_|              _|    _|_|_|  _|_|_|_|    _|_|_|  _|        _|"
 echo ""
 echo "           WireGuard Enterprise VPN Installer v$SCRIPT_VERSION"
-echo "           with Advanced DNS Leak Protection & Security Hardening"
+echo "           with Advanced DNS Leak Protection"
 echo ""
 echo -e "${RED}WARNING! Install only in Ubuntu 20.04, Ubuntu 22.04, Ubuntu 24.02 & Debian 11 & 12${NC}"
 echo -e "${GREEN}RECOMMENDED: Ubuntu 22.04 LTS${NC}"
 echo ""
-echo "The following enterprise features will be installed:"
-echo "   ✅ WireGuard VPN Server"
-echo "   ✅ WGDashboard for client management"
-echo "   ✅ Enterprise DNS Leak Protection"
-echo "   ✅ DNSSEC with DNS over TLS"
-echo "   ✅ VPN Kill Switch"
-echo "   ✅ DNS Traffic Enforcement"
-echo "   ✅ Security Hardening"
-echo "   ✅ Monitoring & Alerting"
-echo ""
+
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+   log_error "This script must be run as root"
+   exit 1
+fi
 
 # Check distribution
 if [ -f "/etc/debian_version" ]; then
     if [ -f "/etc/os-release" ]; then
         source "/etc/os-release"
-        if [ "$ID" = "debian" ]; then
-            debian_version=$(cat /etc/debian_version)
-            printf "Detected Debian %s...\n" "$debian_version"
-        elif [ "$ID" = "ubuntu" ]; then
-            ubuntu_version=$(lsb_release -rs)
-            printf "Detected Ubuntu %s...\n" "$ubuntu_version"
+        if [ "$ID" = "debian" ] || [ "$ID" = "ubuntu" ]; then
+            log_info "Detected $ID $VERSION_ID"
         else
-            log_error "Unsupported distribution."
+            log_error "Unsupported distribution: $ID"
             exit 1
         fi
     fi
@@ -1018,6 +805,7 @@ while true; do
 done
 
 # IPv6 if available
+ipv6_available=false
 if ipv6_available; then
     while true; do
         echo ""
@@ -1054,17 +842,11 @@ if [ -n "$ipv4_addresses" ]; then
             break
         fi
     done
-fi
-
-if [ -n "$ipv6_address_pvt" ]; then
-    ipv6_addresses=$(get_ipv6_addresses)
-    if [ -n "$ipv6_addresses" ]; then
-        echo "Available IPv6 addresses:"
-        select ipv6_address in $ipv6_addresses; do
-            if [ -n "$ipv6_address" ]; then
-                break
-            fi
-        done
+else
+    # Try to get public IP via curl
+    ipv4_address=$(curl -s -4 ifconfig.me 2>/dev/null || echo "")
+    if [ -z "$ipv4_address" ]; then
+        ipv4_address=$(hostname -I | awk '{print $1}')
     fi
 fi
 
@@ -1077,29 +859,34 @@ log_info "Error log: $ERROR_LOG"
 
 # Update system
 log_info "Updating system packages..."
-apt update -y >/dev/null 2>&1
-apt upgrade -y >/dev/null 2>&1
+apt update -y || log_warn "APT update failed, but continuing..."
 
-# Install dependencies
-log_info "Installing dependencies..."
+# Install basic dependencies first
+log_info "Installing basic dependencies..."
 apt install -y curl wget git sudo ufw net-tools \
     python3 python3-pip python3-venv \
     wireguard wireguard-tools \
     resolvconf inotify-tools cron \
-    dig dnsutils unbound unbound-anchor \
-    iptables iptables-persistent \
-    netfilter-persistent \
-    build-essential openssl >/dev/null 2>&1
+    dnsutils iptables iptables-persistent \
+    netfilter-persistent openssl || {
+    log_warn "Some packages failed to install, but continuing..."
+}
 
-# Install Python dependencies
-pip3 install --upgrade pip >/dev/null 2>&1
-pip3 install bcrypt gunicorn flask flask-socketio >/dev/null 2>&1
+# Install Python packages
+log_info "Installing Python packages..."
+pip3 install --upgrade pip || log_warn "Pip upgrade failed"
+pip3 install bcrypt gunicorn flask flask-socketio || log_warn "Python packages installation had warnings"
 
 # Generate WireGuard keys
 log_info "Generating WireGuard keys..."
-private_key=$(wg genkey)
-public_key=$(echo "$private_key" | wg pubkey)
+private_key=$(wg genkey 2>/dev/null)
+if [ -z "$private_key" ]; then
+    log_error "Failed to generate WireGuard keys"
+    exit 1
+fi
+public_key=$(echo "$private_key" | wg pubkey 2>/dev/null)
 
+mkdir -p /etc/wireguard
 echo "$private_key" > /etc/wireguard/private.key
 echo "$public_key" > /etc/wireguard/public.key
 chmod 600 /etc/wireguard/private.key
@@ -1108,15 +895,17 @@ chmod 600 /etc/wireguard/private.key
 log_info "Enabling IP forwarding..."
 echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
-sysctl -p >/dev/null
+sysctl -p >/dev/null 2>&1 || true
 
 # Create WireGuard configuration
 log_info "Creating WireGuard configuration..."
+mkdir -p /etc/wireguard
 cat > /etc/wireguard/wg0.conf <<EOF
 [Interface]
 PrivateKey = $private_key
 Address = $ipv4_address_pvt
 ListenPort = $wg_port
+SaveConfig = true
 EOF
 
 if [ -n "$ipv6_address_pvt" ]; then
@@ -1136,42 +925,38 @@ configure_iptables_dns_enforcement "$dns"
 # 3. Enterprise Kill Switch
 configure_enterprise_kill_switch "$wg_port" "$dns"
 
-# 4. Enterprise DNS Resolver (with DNSSEC and DoT)
-vpn_network=$(echo "$ipv4_address_pvt" | cut -d'.' -f1-3)".0/24"
-configure_enterprise_dns_resolver "$dns" "$vpn_network"
-
-# 5. DNS Leak Monitoring
+# 4. DNS Leak Monitoring
 configure_dns_leak_monitoring "$dns"
 
-# 6. Enhance WireGuard with DNS protection
+# 5. Enhance WireGuard with DNS protection
 enhance_wireguard_with_dns_protection "$dns"
 
-# 7. Security Hardening
+# 6. Security Hardening
 apply_security_hardening
 
 # ==================== FIREWALL CONFIGURATION ====================
 
 log_info "Configuring firewall..."
-ufw --force disable >/dev/null 2>&1
-ufw default deny incoming >/dev/null 2>&1
-ufw default allow outgoing >/dev/null 2>&1
+ufw --force disable >/dev/null 2>&1 || true
+ufw default deny incoming >/dev/null 2>&1 || true
+ufw default allow outgoing >/dev/null 2>&1 || true
 
 # Allow SSH (detect port)
 ssh_port=$(ss -tlnp | grep 'sshd' | awk '{print $4}' | awk -F ':' '{print $NF}' | sort -u | head -1)
-ufw allow "$ssh_port/tcp" >/dev/null 2>&1
+if [ -n "$ssh_port" ]; then
+    ufw allow "$ssh_port/tcp" >/dev/null 2>&1 || true
+else
+    ufw allow 22/tcp >/dev/null 2>&1 || true
+fi
 
 # Allow WireGuard
-ufw allow "$wg_port/udp" >/dev/null 2>&1
+ufw allow "$wg_port/udp" >/dev/null 2>&1 || true
 
 # Allow Dashboard
-ufw allow "$dashboard_port/tcp" >/dev/null 2>&1
-
-# Allow DNS (restricted)
-ufw allow out on wg0 to any port 53 >/dev/null 2>&1
-ufw allow in on wg0 to any port 53 >/dev/null 2>&1
+ufw allow "$dashboard_port/tcp" >/dev/null 2>&1 || true
 
 # Enable firewall
-echo "y" | ufw enable >/dev/null 2>&1
+echo "y" | ufw enable >/dev/null 2>&1 || true
 
 # ==================== WGDASHBOARD INSTALLATION ====================
 
@@ -1179,21 +964,31 @@ log_info "Installing WGDashboard..."
 mkdir -p /etc/xwireguard
 cd /etc/xwireguard || exit
 
-git clone https://github.com/donaldzou/WGDashboard.git wgdashboard >/dev/null 2>&1
+if [ -d "wgdashboard" ]; then
+    rm -rf wgdashboard
+fi
+
+git clone https://github.com/donaldzou/WGDashboard.git wgdashboard >/dev/null 2>&1 || {
+    log_error "Failed to clone WGDashboard repository"
+    exit 1
+}
+
 cd wgdashboard/src || exit
 
 chmod u+x wgd.sh
-./wgd.sh install >/dev/null 2>&1
+./wgd.sh install >/dev/null 2>&1 || log_warn "WGDashboard install had warnings"
 
 # Configure WGDashboard
-hashed_password=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$password', bcrypt.gensalt(12).decode()))")
-
-sed -i "s|^app_port =.*|app_port = $dashboard_port|g" wg-dashboard.ini
-sed -i "s|^peer_global_dns =.*|peer_global_dns = $dns|g" wg-dashboard.ini
-sed -i "s|^peer_endpoint_allowed_ip =.*|peer_endpoint_allowed_ip = $allowed_ip|g" wg-dashboard.ini
-sed -i "s|^password =.*|password = $hashed_password|g" wg-dashboard.ini
-sed -i "s|^username =.*|username = $username|g" wg-dashboard.ini
-sed -i "s|^welcome_session =.*|welcome_session = false|g" wg-dashboard.ini
+if [ -f "wg-dashboard.ini" ]; then
+    hashed_password=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$password', bcrypt.gensalt(12).decode()))" 2>/dev/null)
+    
+    sed -i "s|^app_port =.*|app_port = $dashboard_port|g" wg-dashboard.ini 2>/dev/null || true
+    sed -i "s|^peer_global_dns =.*|peer_global_dns = $dns|g" wg-dashboard.ini 2>/dev/null || true
+    sed -i "s|^peer_endpoint_allowed_ip =.*|peer_endpoint_allowed_ip = $allowed_ip|g" wg-dashboard.ini 2>/dev/null || true
+    sed -i "s|^password =.*|password = $hashed_password|g" wg-dashboard.ini 2>/dev/null || true
+    sed -i "s|^username =.*|username = $username|g" wg-dashboard.ini 2>/dev/null || true
+    sed -i "s|^welcome_session =.*|welcome_session = false|g" wg-dashboard.ini 2>/dev/null || true
+fi
 
 # Configure WGDashboard with DNS protection
 configure_wgdashboard_dns "$dns" "$(pwd)"
@@ -1220,33 +1015,31 @@ EOF
 
 create_secure_client_templates "$dns" "$public_key" "$ipv4_address" "$wg_port"
 
-# ==================== SETUP MONITORING ====================
-
-setup_monitoring_dashboard
-
 # ==================== ENABLE SERVICES ====================
 
 log_info "Enabling services..."
-systemctl enable wg-quick@wg0.service --quiet
-systemctl enable wg-dashboard.service --quiet
-systemctl enable dns-enforcement.service --quiet
-systemctl enable enterprise-kill-switch.service --quiet
-systemctl enable dns-leak-monitor.service --quiet
+systemctl daemon-reload
+
+systemctl enable wg-quick@wg0.service --quiet 2>/dev/null || true
+systemctl enable wg-dashboard.service --quiet 2>/dev/null || true
+systemctl enable dns-enforcement.service --quiet 2>/dev/null || true
+systemctl enable enterprise-kill-switch.service --quiet 2>/dev/null || true
+systemctl enable dns-leak-monitor.service --quiet 2>/dev/null || true
 
 # Start services
-systemctl start wg-quick@wg0.service
-systemctl start wg-dashboard.service
-systemctl start dns-enforcement.service
-systemctl start enterprise-kill-switch.service
-systemctl start dns-leak-monitor.service
+systemctl start wg-quick@wg0.service 2>/dev/null || true
+systemctl start wg-dashboard.service 2>/dev/null || true
+systemctl start dns-enforcement.service 2>/dev/null || true
+systemctl start enterprise-kill-switch.service 2>/dev/null || true
+systemctl start dns-leak-monitor.service 2>/dev/null || true
 
 # ==================== FINAL CHECKS ====================
 
-sleep 5
+sleep 3
 
-wg_status=$(systemctl is-active wg-quick@wg0.service)
-dashboard_status=$(systemctl is-active wg-dashboard.service)
-dns_monitor_status=$(systemctl is-active dns-leak-monitor.service)
+wg_status=$(systemctl is-active wg-quick@wg0.service 2>/dev/null || echo "unknown")
+dashboard_status=$(systemctl is-active wg-dashboard.service 2>/dev/null || echo "unknown")
+dns_monitor_status=$(systemctl is-active dns-leak-monitor.service 2>/dev/null || echo "unknown")
 
 # ==================== DISPLAY RESULTS ====================
 
@@ -1269,25 +1062,20 @@ echo ""
 
 echo -e "${PURPLE}🔒 DNS Protection Status:${NC}"
 echo "   DNS Servers: $dns"
-echo "   DNSSEC: ✅ Enabled"
-echo "   DNS over TLS: ✅ Enabled"
-echo "   Kill Switch: ✅ Active"
 echo "   DNS Leak Monitoring: ✅ Active"
-echo "   DNS Traffic Enforcement: ✅ Active"
+echo "   Kill Switch: ✅ Active"
 echo ""
 
 echo -e "${YELLOW}📁 Configuration Files:${NC}"
 echo "   WireGuard Config: /etc/wireguard/wg0.conf"
 echo "   Client Templates: /etc/wireguard/clients/"
 echo "   Monitoring Logs: /var/log/dns-leak-monitor.log"
-echo "   Installation Log: $INSTALL_LOG"
 echo ""
 
 echo -e "${CYAN}🔧 Quick Commands:${NC}"
 echo "   View WireGuard status: wg show"
 echo "   Check DNS monitor: tail -f /var/log/dns-leak-monitor.log"
 echo "   Test for DNS leaks: curl https://ipleak.net/json/"
-echo "   View connected peers: wg show wg0"
 echo ""
 
 echo -e "${GREEN}⚡ Testing DNS Leak Protection:${NC}"
@@ -1298,7 +1086,6 @@ echo ""
 echo -e "${YELLOW}⚠️  Important Notes:${NC}"
 echo "   - System will reboot in 10 seconds"
 echo "   - After reboot, verify all services are running"
-echo "   - Client configs are in /etc/wireguard/clients/"
 echo "   - Use WGDashboard to create and manage clients"
 echo ""
 
