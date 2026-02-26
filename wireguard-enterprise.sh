@@ -1458,10 +1458,15 @@ if [ -f "$DASHBOARD_DIR/wg-dashboard.ini" ]; then
 fi
 
 echo "Restarting Wireguard & WGDashboard services ....."
-
+echo "Fixing unbound permissions and tweak ....."
+sudo sh fix-unbound.sh >/dev/null 2>&1
+systemctl restart unbound.service 2>/dev/null || true
+echo ""
+echo "Unbound service restarted ....."
+echo ""
+echo "Performing final checks on services ....."
 echo ""
 echo ""
-
 wg_status=$(systemctl is-active wg-quick@wg0.service)
 dashboard_status=$(systemctl is-active wg-dashboard.service)
 unbound_status=$(systemctl is-active unbound.service)
