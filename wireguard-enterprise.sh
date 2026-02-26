@@ -78,7 +78,7 @@ log_success() {
 
 # ==================== ENTERPRISE DNS LEAK PROTECTION ====================
 
-# 1. SYSTEM-WIDE DNS LOCKDOWN
+# 1. SYSTEM-WIDE DNS LOCKDOWN - Updated for local resolver
 configure_system_dns_lockdown() {
     local dns_servers="$1"
     
@@ -90,8 +90,24 @@ configure_system_dns_lockdown() {
     # First make it writable if it's immutable
     chattr -i /etc/resolv.conf 2>/dev/null || true
     
-    # Create immutable DNS configuration
-    cat > /etc/resolv.conf <<EOF
+    # If using local resolver, set to 127.0.0.1
+    if [[ "$dns_servers" == "127.0.0.1" ]]; then
+        cat > /etc/resolv.conf <<EOF
+# WireGuard Enterprise VPN DNS Configuration
+# Using local Unbound resolver
+# Generated: $(date)
+# DO NOT EDIT - This file is protected
+
+nameserver 127.0.0.1
+options rotate
+options timeout:1
+options attempts:5
+options edns0
+options trust-ad
+EOF
+    else
+        # Otherwise use the provided DNS servers directly
+        cat > /etc/resolv.conf <<EOF
 # WireGuard Enterprise VPN DNS Configuration
 # Generated: $(date)
 # DO NOT EDIT - This file is protected
@@ -107,8 +123,9 @@ options attempts:5
 options edns0
 options trust-ad
 EOF
+    fi
 
-    # Make resolv.conf immutable (if possible)
+    # Make resolv.conf immutable
     chattr +i /etc/resolv.conf 2>/dev/null || log_warn "Could not make resolv.conf immutable"
     
     log_success "System DNS locked down to: $dns_servers"
@@ -180,7 +197,7 @@ EOF
     log_success "iptables DNS enforcement configured"
 }
 
-# 3. KILL SWITCH WITH DNS PROTECTION - UPDATED WITH ALL PORTS
+# 3. KILL SWITCH WITH DNS PROTECTION - Updated for local resolver
 configure_enterprise_kill_switch() {
     local wg_port="$1"
     local dns_servers="$2"
@@ -202,7 +219,7 @@ DASHBOARD_PORT="$dashboard_port"
 DNS_SERVERS="$dns_servers"
 
 enable_kill_switch() {
-    # Flush existing rules first
+    # Flush existing rules
     iptables -F 2>/dev/null || true
     iptables -t nat -F 2>/dev/null || true
     iptables -t mangle -F 2>/dev/null || true
@@ -215,88 +232,67 @@ enable_kill_switch() {
     # Allow established connections
     iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
     iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
-
-        # ===== CRITICAL: ALLOW DNS RESOLUTION =====
-    # Allow DNS queries to ANY DNS server (for resolution)
-    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
-    iptables -A INPUT -p udp --sport 53 -j ACCEPT 2>/dev/null || true
-    iptables -A INPUT -p tcp --sport 53 -j ACCEPT 2>/dev/null || true
     
-    # ===== CRITICAL: ALLOW MANAGEMENT PORTS =====
-    # Allow SSH (both default 22 and custom port)
-    iptables -A INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT 2>/dev/null || true
-    iptables -A INPUT -p tcp --dport \$SSH_PORT -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p tcp --sport \$SSH_PORT -j ACCEPT 2>/dev/null || true
+    # ===== LOCAL DNS RESOLVER (Unbound) =====
+    # Allow communication with local Unbound
+    iptables -A INPUT -s 127.0.0.1 -p udp --dport 53 -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -d 127.0.0.1 -p udp --sport 53 -j ACCEPT 2>/dev/null || true
+    iptables -A INPUT -s 127.0.0.1 -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -d 127.0.0.1 -p tcp --sport 53 -j ACCEPT 2>/dev/null || true
     
-    # Allow Dashboard port
-    iptables -A INPUT -p tcp --dport \$DASHBOARD_PORT -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p tcp --sport \$DASHBOARD_PORT -j ACCEPT 2>/dev/null || true
-    
-    # Allow port 10086 (additional management port)
-    iptables -A INPUT -p tcp --dport 10086 -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p tcp --sport 10086 -j ACCEPT 2>/dev/null || true
-    
-    # Allow OpenSSH service (if using service name)
-    iptables -A INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
-    
-    # ===== WIREGUARD PORTS =====
-    # Allow VPN interface
-    iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true
-    
-    # Allow VPN server connection (UDP)
-    iptables -A INPUT -p udp --dport \$WG_PORT -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p udp --sport \$WG_PORT -j ACCEPT 2>/dev/null || true
-    
-    # ===== DNS PORTS =====
-    # Allow DNS (port 53 UDP/TCP)
-    iptables -A INPUT -p udp --dport 53 -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p udp --sport 53 -j ACCEPT 2>/dev/null || true
-    iptables -A INPUT -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p tcp --sport 53 -j ACCEPT 2>/dev/null || true
-    
-    # Allow DNS to specific servers (for outbound queries)
+    # Allow Unbound to forward queries to upstream DNS servers
 EOF
 
-    # Add DNS server rules for outbound queries
+    # Add upstream DNS server rules for Unbound
     IFS=',' read -ra dns_array <<< "$dns_servers"
     for dns in "${dns_array[@]}"; do
         dns=$(echo "$dns" | xargs)
         if [[ $dns =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "    iptables -A OUTPUT -p udp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true" >> /etc/wireguard/enterprise-kill-switch.sh
-            echo "    iptables -A OUTPUT -p tcp --dport 53 -d $dns -j ACCEPT 2>/dev/null || true" >> /etc/wireguard/enterprise-kill-switch.sh
+            echo "    iptables -A INPUT -p udp --sport 53 -s $dns -j ACCEPT 2>/dev/null || true" >> /etc/wireguard/enterprise-kill-switch.sh
         fi
     done
 
     cat >> /etc/wireguard/enterprise-kill-switch.sh <<'EOF'
     
+    # ===== MANAGEMENT PORTS =====
+    # Allow SSH
+    iptables -A INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -p tcp --sport 22 -j ACCEPT 2>/dev/null || true
+    iptables -A INPUT -p tcp --dport $SSH_PORT -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -p tcp --sport $SSH_PORT -j ACCEPT 2>/dev/null || true
+    
+    # Allow Dashboard
+    iptables -A INPUT -p tcp --dport $DASHBOARD_PORT -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -p tcp --sport $DASHBOARD_PORT -j ACCEPT 2>/dev/null || true
+    
+    # Allow port 10086
+    iptables -A INPUT -p tcp --dport 10086 -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -p tcp --sport 10086 -j ACCEPT 2>/dev/null || true
+    
+    # ===== WIREGUARD =====
+    iptables -A INPUT -i wg0 -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -o wg0 -j ACCEPT 2>/dev/null || true
+    iptables -A INPUT -p udp --dport $WG_PORT -j ACCEPT 2>/dev/null || true
+    iptables -A OUTPUT -p udp --sport $WG_PORT -j ACCEPT 2>/dev/null || true
+    
     # ===== LOOPBACK =====
-    # Allow loopback
     iptables -A INPUT -i lo -j ACCEPT 2>/dev/null || true
     iptables -A OUTPUT -o lo -j ACCEPT 2>/dev/null || true
     
-    # ===== ICMP (Ping) =====
-    # Allow ICMP for troubleshooting
+    # ===== ICMP =====
     iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || true
     iptables -A OUTPUT -p icmp --icmp-type echo-reply -j ACCEPT 2>/dev/null || true
-    iptables -A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || true
-    iptables -A INPUT -p icmp --icmp-type echo-reply -j ACCEPT 2>/dev/null || true
     
     # ===== LOGGING =====
-    # Log dropped packets (rate limited to avoid log flooding)
     iptables -A INPUT -m limit --limit 5/min -j LOG --log-prefix "KILLSWITCH_IN: " --log-level 4 2>/dev/null || true
     iptables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "KILLSWITCH_OUT: " --log-level 4 2>/dev/null || true
 }
 
 disable_kill_switch() {
-    # Flush all rules
     iptables -F 2>/dev/null || true
     iptables -t nat -F 2>/dev/null || true
     iptables -t mangle -F 2>/dev/null || true
-    
-    # Set default policies to ACCEPT
     iptables -P INPUT ACCEPT 2>/dev/null || true
     iptables -P OUTPUT ACCEPT 2>/dev/null || true
     iptables -P FORWARD ACCEPT 2>/dev/null || true
@@ -318,19 +314,17 @@ EOF
 
     chmod +x /etc/wireguard/enterprise-kill-switch.sh
     
-    # Create systemd service
-# Update the service file with a delay
-cat > /etc/systemd/system/enterprise-kill-switch.service <<EOF
+    cat > /etc/systemd/system/enterprise-kill-switch.service <<EOF
 [Unit]
 Description=Enterprise Kill Switch Service
-After=wg-quick@wg0.service network.target ssh.service
+After=unbound.service wg-quick@wg0.service network.target ssh.service
 BindsTo=wg-quick@wg0.service
-Wants=network.target
+Wants=unbound.service network.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/bin/sleep 5
+ExecStartPre=/bin/sleep 10
 ExecStart=/etc/wireguard/enterprise-kill-switch.sh start
 ExecStop=/etc/wireguard/enterprise-kill-switch.sh stop
 
@@ -340,7 +334,7 @@ EOF
 
     systemctl daemon-reload
     systemctl enable enterprise-kill-switch.service --quiet 2>/dev/null || true
-    log_success "Enterprise kill switch configured with all ports allowed"
+    log_success "Enterprise kill switch configured for local DNS resolver"
 }
 
 # 4. DNS LEAK MONITORING
@@ -461,6 +455,110 @@ configure_wgdashboard_dns() {
         log_success "WGDashboard configured with DNS protection"
     else
         log_warn "WGDashboard config not found, skipping"
+    fi
+}
+
+# ==================== INSTALL AND CONFIGURE UNBOUND ====================
+configure_unbound_dns() {
+    local dns_servers="$1"
+    
+    log_info "Installing and configuring Unbound DNS resolver..."
+    
+    # Install Unbound
+    apt install -y unbound unbound-anchor >/dev/null 2>&1
+    
+    # Backup original config
+    cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.backup 2>/dev/null || true
+    
+    # Create Unbound configuration with DNS leak protection
+    cat > /etc/unbound/unbound.conf <<EOF
+# Unbound configuration for WireGuard Enterprise
+# Generated: $(date)
+
+server:
+    # Listen on localhost only
+    interface: 127.0.0.1
+    interface: ::1
+    port: 53
+    
+    # Allow only localhost to query
+    access-control: 127.0.0.0/8 allow
+    access-control: ::1 allow
+    
+    # Security settings
+    hide-identity: yes
+    hide-version: yes
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: yes
+    
+    # DNSSEC
+    auto-trust-anchor-file: "/var/lib/unbound/root.key"
+    val-log-level: 2
+    
+    # Cache settings
+    cache-min-ttl: 3600
+    cache-max-ttl: 86400
+    prefetch: yes
+    prefetch-key: yes
+    
+    # Performance
+    num-threads: 2
+    msg-cache-size: 100m
+    rrset-cache-size: 200m
+    outgoing-range: 8192
+    num-queries-per-thread: 512
+    
+    # Privacy
+    qname-minimisation: yes
+    qname-minimisation-strict: yes
+    aggressive-nsec: yes
+    
+    # Disable ANY query
+    deny-any: yes
+    
+    # Reduce logging
+    verbosity: 1
+    use-syslog: yes
+    
+    # DNS leak prevention - Force all queries through specified forwarders
+    do-not-query-localhost: no
+    
+forward-zone:
+    name: "."
+EOF
+
+    # Add forwarders from user input
+    IFS=',' read -ra dns_array <<< "$dns_servers"
+    for dns in "${dns_array[@]}"; do
+        dns=$(echo "$dns" | xargs)
+        echo "    forward-addr: $dns" >> /etc/unbound/unbound.conf
+    done
+
+    # Add DNSSEC trust anchor
+    unbound-anchor -a /var/lib/unbound/root.key 2>/dev/null || true
+    
+    # Set proper permissions
+    chown -R unbound:unbound /etc/unbound
+    chmod 755 /etc/unbound
+    
+    # Configure resolv.conf to use local Unbound
+    configure_system_dns_lockdown "127.0.0.1"
+    
+    # Start and enable Unbound
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+    
+    systemctl enable unbound
+    systemctl restart unbound
+    
+    # Test Unbound
+    if dig @127.0.0.1 google.com +short >/dev/null 2>&1; then
+        log_success "Unbound configured successfully with forwarders: $dns_servers"
+    else
+        log_error "Unbound failed to start. Checking logs..."
+        journalctl -u unbound --no-pager | tail -20
+        return 1
     fi
 }
 
@@ -1015,6 +1113,9 @@ if ! check_package_installed cron ; then
     echo "Cron is not installed. Installing..."
     apt install -y cron >/dev/null 2>&1
 fi
+
+# Install and configure Unbound
+configure_unbound_dns "$dns"
 
 # Now that dependencies are ensured to be installed, install WireGuard
 echo "Installing WireGuard..."
