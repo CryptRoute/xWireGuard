@@ -78,57 +78,211 @@ log_success() {
 
 # ==================== ENTERPRISE DNS LEAK PROTECTION ====================
 
-# 1. SYSTEM-WIDE DNS LOCKDOWN - Updated for local resolver
+# ==================== DNS LOCKDOWN ====================
 configure_system_dns_lockdown() {
     local dns_servers="$1"
     
     log_info "Configuring system-wide DNS lockdown..."
     
-    # Backup original resolv.conf
+    chattr -i /etc/resolv.conf 2>/dev/null || true
     cp /etc/resolv.conf /etc/resolv.conf.backup 2>/dev/null || true
     
-    # First make it writable if it's immutable
-    chattr -i /etc/resolv.conf 2>/dev/null || true
-    
-    # If using local resolver, set to 127.0.0.1
     if [[ "$dns_servers" == "127.0.0.1" ]]; then
         cat > /etc/resolv.conf <<EOF
 # WireGuard Enterprise VPN DNS Configuration
 # Using local Unbound resolver
 # Generated: $(date)
-# DO NOT EDIT - This file is protected
-
 nameserver 127.0.0.1
 options rotate
 options timeout:1
 options attempts:5
-options edns0
-options trust-ad
 EOF
     else
-        # Otherwise use the provided DNS servers directly
         cat > /etc/resolv.conf <<EOF
 # WireGuard Enterprise VPN DNS Configuration
 # Generated: $(date)
-# DO NOT EDIT - This file is protected
-
 $(for dns in $(echo $dns_servers | tr ',' ' '); do
     echo "nameserver $(echo $dns | xargs)"
 done)
-
-# DNS Security Options
 options rotate
 options timeout:1
 options attempts:5
-options edns0
-options trust-ad
 EOF
     fi
 
-    # Make resolv.conf immutable
     chattr +i /etc/resolv.conf 2>/dev/null || log_warn "Could not make resolv.conf immutable"
-    
     log_success "System DNS locked down to: $dns_servers"
+}
+
+# ==================== UNBOUND INSTALLATION ====================
+configure_unbound_dns() {
+    local dns_servers="$1"
+    
+    log_info "Installing and configuring Unbound DNS resolver..."
+    
+    # Install Unbound
+    DEBIAN_FRONTEND=noninteractive apt install -y unbound unbound-anchor >/dev/null 2>&1
+    
+    # Stop any service using port 53
+    systemctl stop systemd-resolved 2>/dev/null || true
+    systemctl disable systemd-resolved 2>/dev/null || true
+    systemctl stop dnsmasq 2>/dev/null || true
+    systemctl disable dnsmasq 2>/dev/null || true
+    
+    # Kill any process using port 53
+    fuser -k 53/tcp 53/udp 2>/dev/null || true
+    
+    # Create Unbound configuration
+    cat > /etc/unbound/unbound.conf <<EOF
+# Unbound configuration for WireGuard Enterprise
+# Generated: $(date)
+
+server:
+    interface: 127.0.0.1
+    port: 53
+    access-control: 127.0.0.0/8 allow
+    hide-identity: yes
+    hide-version: yes
+    harden-glue: yes
+    harden-dnssec-stripped: yes
+    use-caps-for-id: yes
+    cache-min-ttl: 3600
+    cache-max-ttl: 86400
+    prefetch: yes
+    num-threads: 2
+    msg-cache-size: 50m
+    rrset-cache-size: 100m
+    outgoing-range: 4096
+    qname-minimisation: yes
+    verbosity: 1
+    use-syslog: yes
+    do-not-query-localhost: no
+    
+forward-zone:
+    name: "."
+EOF
+
+    # Add forwarders
+    IFS=',' read -ra dns_array <<< "$dns_servers"
+    for dns in "${dns_array[@]}"; do
+        dns=$(echo "$dns" | xargs)
+        echo "    forward-addr: $dns" >> /etc/unbound/unbound.conf
+    done
+
+    # Create root key
+    mkdir -p /var/lib/unbound
+    unbound-anchor -a /var/lib/unbound/root.key 2>/dev/null || true
+    
+    # Set permissions
+    chown -R unbound:unbound /var/lib/unbound
+    chown -R unbound:unbound /etc/unbound
+    
+    # Start Unbound
+    systemctl enable unbound
+    systemctl restart unbound
+    sleep 3
+    
+    # Test Unbound
+    if dig @127.0.0.1 google.com +short >/dev/null 2>&1; then
+        log_success "Unbound configured successfully"
+        configure_system_dns_lockdown "127.0.0.1"
+    else
+        log_warn "Unbound on port 53 failed, trying port 5353..."
+        
+        # Try alternative port
+        cat > /etc/unbound/unbound.conf <<EOF
+server:
+    interface: 127.0.0.1
+    port: 5353
+    access-control: 127.0.0.0/8 allow
+    do-not-query-localhost: no
+forward-zone:
+    name: "."
+EOF
+        IFS=',' read -ra dns_array <<< "$dns_servers"
+        for dns in "${dns_array[@]}"; do
+            dns=$(echo "$dns" | xargs)
+            echo "    forward-addr: $dns" >> /etc/unbound/unbound.conf
+        done
+        
+        systemctl restart unbound
+        sleep 3
+        
+        if dig @127.0.0.1 -p 5353 google.com +short >/dev/null 2>&1; then
+            log_success "Unbound configured on port 5353"
+            cat > /etc/resolv.conf <<EOF
+# WireGuard Enterprise VPN DNS Configuration
+# Using local Unbound resolver on port 5353
+nameserver 127.0.0.1
+options rotate timeout:1 attempts:5
+EOF
+            chattr +i /etc/resolv.conf 2>/dev/null || true
+        else
+            log_error "Unbound failed to start. Falling back to direct DNS..."
+            configure_system_dns_lockdown "$dns_servers"
+        fi
+    fi
+}
+
+
+# ==================== DNS MONITORING ====================
+configure_dns_leak_monitoring() {
+    log_info "Configuring DNS leak monitoring..."
+    
+    mkdir -p /etc/wireguard/monitoring
+    
+    cat > /etc/wireguard/monitoring/dns-leak-monitor.sh <<'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/dns-leak-monitor.log"
+ALERT_THRESHOLD=3
+LEAK_COUNT=0
+
+check_dns_leak() {
+    local vpn_ip=$(curl -s -4 --max-time 5 ifconfig.me 2>/dev/null || echo "unknown")
+    local dns1=$(dig +short whoami.akamai.net @resolver1.opendns.com 2>/dev/null)
+    local dns2=$(dig +short -4 TXT o-o.myaddr.l.google.com @ns1.google.com 2>/dev/null | tr -d '"')
+    
+    if [[ "$dns1" != "$vpn_ip" ]] || [[ "$dns2" != "$vpn_ip" ]]; then
+        ((LEAK_COUNT++))
+        echo "$(date): DNS LEAK DETECTED! (Count: $LEAK_COUNT)" >> $LOG_FILE
+        echo "VPN IP: $vpn_ip, DNS1: $dns1, DNS2: $dns2" >> $LOG_FILE
+        
+        if [ $LEAK_COUNT -ge $ALERT_THRESHOLD ]; then
+            echo "$(date): CRITICAL - Activating kill switch" >> $LOG_FILE
+            /etc/wireguard/enterprise-kill-switch.sh start 2>/dev/null || true
+        fi
+    else
+        echo "$(date): DNS check passed" >> $LOG_FILE
+        LEAK_COUNT=0
+    fi
+}
+
+while true; do
+    check_dns_leak
+    sleep 300
+done
+EOF
+
+    chmod +x /etc/wireguard/monitoring/dns-leak-monitor.sh
+    
+    cat > /etc/systemd/system/dns-leak-monitor.service <<EOF
+[Unit]
+Description=DNS Leak Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/etc/wireguard/monitoring/dns-leak-monitor.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable dns-leak-monitor.service --quiet 2>/dev/null || true
+    log_success "DNS leak monitoring configured"
 }
 
 # 2. IPTABLES DNS TRAFFIC ENFORCEMENT
@@ -458,109 +612,6 @@ configure_wgdashboard_dns() {
     fi
 }
 
-# ==================== INSTALL AND CONFIGURE UNBOUND ====================
-configure_unbound_dns() {
-    local dns_servers="$1"
-    
-    log_info "Installing and configuring Unbound DNS resolver..."
-    
-    # Install Unbound
-    apt install -y unbound unbound-anchor >/dev/null 2>&1
-    
-    # Backup original config
-    cp /etc/unbound/unbound.conf /etc/unbound/unbound.conf.backup 2>/dev/null || true
-    
-    # Create Unbound configuration with DNS leak protection
-    cat > /etc/unbound/unbound.conf <<EOF
-# Unbound configuration for WireGuard Enterprise
-# Generated: $(date)
-
-server:
-    # Listen on localhost only
-    interface: 127.0.0.1
-    interface: ::1
-    port: 53
-    
-    # Allow only localhost to query
-    access-control: 127.0.0.0/8 allow
-    access-control: ::1 allow
-    
-    # Security settings
-    hide-identity: yes
-    hide-version: yes
-    harden-glue: yes
-    harden-dnssec-stripped: yes
-    use-caps-for-id: yes
-    
-    # DNSSEC
-    auto-trust-anchor-file: "/var/lib/unbound/root.key"
-    val-log-level: 2
-    
-    # Cache settings
-    cache-min-ttl: 3600
-    cache-max-ttl: 86400
-    prefetch: yes
-    prefetch-key: yes
-    
-    # Performance
-    num-threads: 2
-    msg-cache-size: 100m
-    rrset-cache-size: 200m
-    outgoing-range: 8192
-    num-queries-per-thread: 512
-    
-    # Privacy
-    qname-minimisation: yes
-    qname-minimisation-strict: yes
-    aggressive-nsec: yes
-    
-    # Disable ANY query
-    deny-any: yes
-    
-    # Reduce logging
-    verbosity: 1
-    use-syslog: yes
-    
-    # DNS leak prevention - Force all queries through specified forwarders
-    do-not-query-localhost: no
-    
-forward-zone:
-    name: "."
-EOF
-
-    # Add forwarders from user input
-    IFS=',' read -ra dns_array <<< "$dns_servers"
-    for dns in "${dns_array[@]}"; do
-        dns=$(echo "$dns" | xargs)
-        echo "    forward-addr: $dns" >> /etc/unbound/unbound.conf
-    done
-
-    # Add DNSSEC trust anchor
-    unbound-anchor -a /var/lib/unbound/root.key 2>/dev/null || true
-    
-    # Set proper permissions
-    chown -R unbound:unbound /etc/unbound
-    chmod 755 /etc/unbound
-    
-    # Configure resolv.conf to use local Unbound
-    configure_system_dns_lockdown "127.0.0.1"
-    
-    # Start and enable Unbound
-    systemctl stop systemd-resolved 2>/dev/null || true
-    systemctl disable systemd-resolved 2>/dev/null || true
-    
-    systemctl enable unbound
-    systemctl restart unbound
-    
-    # Test Unbound
-    if dig @127.0.0.1 google.com +short >/dev/null 2>&1; then
-        log_success "Unbound configured successfully with forwarders: $dns_servers"
-    else
-        log_error "Unbound failed to start. Checking logs..."
-        journalctl -u unbound --no-pager | tail -20
-        return 1
-    fi
-}
 
 validate_dns() {
     local dns_list=$1
@@ -1114,12 +1165,15 @@ if ! check_package_installed cron ; then
     apt install -y cron >/dev/null 2>&1
 fi
 
-# Install and configure Unbound
-configure_unbound_dns "$dns"
+
 
 # Now that dependencies are ensured to be installed, install WireGuard
 echo "Installing WireGuard..."
 apt install -y wireguard >/dev/null 2>&1
+
+
+# Install and configure Unbound
+configure_unbound_dns "$dns"
 
 # Generate Wireguard keys
 private_key=$(wg genkey 2>/dev/null)
