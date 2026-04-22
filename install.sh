@@ -434,71 +434,111 @@ fi
 distro=$(lsb_release -is)
 version=$(lsb_release -rs)
 
+# Function to install Python 3.12 from source (for older distros)
+install_python312_from_source() {
+    echo "Installing Python 3.12 from source (this may take several minutes)..."
+    
+    # Install build dependencies
+    apt install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
+    libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev liblzma-dev >/dev/null 2>&1
+    
+    # Download and compile Python 3.12
+    cd /tmp
+    wget https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz -q
+    tar -xf Python-3.12.0.tgz
+    cd Python-3.12.0
+    ./configure --enable-optimizations --prefix=/usr/local >/dev/null 2>&1
+    make -j$(nproc) >/dev/null 2>&1
+    make altinstall >/dev/null 2>&1
+    
+    # Create symlinks
+    ln -sf /usr/local/bin/python3.12 /usr/local/bin/python3
+    ln -sf /usr/local/bin/python3.12 /usr/bin/python3 2>/dev/null || true
+    
+    # Clean up
+    cd /tmp
+    rm -rf Python-3.12.0*
+    
+    echo "Python 3.12 installed successfully"
+}
+
+# Function to install Python 3.12 from deadsnakes PPA (Ubuntu)
+install_python312_from_ppa() {
+    echo "Installing Python 3.12 from deadsnakes PPA..."
+    add-apt-repository ppa:deadsnakes/ppa -y >/dev/null 2>&1
+    apt-get update -y >/dev/null 2>&1
+    apt-get install -y python3.12 python3.12-distutils python3.12-venv --no-install-recommends >/dev/null 2>&1
+    
+    # Set Python 3.12 as default
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+    update-alternatives --set python3 /usr/bin/python3.12 2>/dev/null || true
+}
+
+# Main installation logic based on OS
 if [[ "$distro" == "Ubuntu" && "$version" == "20.04" ]]; then
-    echo "Detected Ubuntu 20.04 LTS. Installing Python 3.10 and WireGuard dependencies..."
-     add-apt-repository ppa:deadsnakes/ppa -y >/dev/null 2>&1
-     apt-get update -y >/dev/null 2>&1
-     apt-get install -y python3.10 python3.10-distutils wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
+    echo "Detected Ubuntu 20.04 LTS. Installing Python 3.12 and WireGuard dependencies..."
+    install_python312_from_ppa
+    apt-get install -y wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
 
-elif [[ ( "$distro" == "Ubuntu" && ( "$version" == "22.04" || "$version" == "24.02" ) ) || ( "$distro" == "Debian" && "$version" == "12" ) ]]; then
-    echo "Detected $distro $version. Proceeding with installation..."
-        # Check if Python 3 is installed
-        if ! check_dpkg_package_installed python3; then
-            echo "Python 3 is not installed. Installing Python 3..."
-            # Install Python 3 system-wide
-            apt install -y python3 >/dev/null 2>&1
-            # Make Python 3 the default version
-            update-alternatives --install /usr/bin/python python /usr/bin/python3 1
-        fi
-        # Function to check the version of Python installed
-        get_python_version() {
-            python3 --version | awk '{print $2}'
-        }
-        # Check the Python version
-        python_version=$(get_python_version)
-        # Compare the Python version
-       #if [[ "$(echo "$python_version" | cut -d. -f1)" -lt 3 || "$(echo "$python_version" | cut -d. -f2)" -lt 7 ]]; then
-        if [[ "$(echo "$python_version" | cut -d. -f1)" -lt 3 || ( "$(echo "$python_version" | cut -d. -f1)" -eq 3 && "$(echo "$python_version" | cut -d. -f2)" -lt 10 ) ]]; then
+elif [[ "$distro" == "Ubuntu" && "$version" == "22.04" ]]; then
+    echo "Detected Ubuntu 22.04 LTS. Installing Python 3.12..."
+    install_python312_from_ppa
+    apt-get install -y wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
 
-            echo "Python version is below 3.10. Upgrading Python..."
-            # Perform the system upgrade of Python
-            apt update -y  >/dev/null 2>&1
-            apt install -y python3 >/dev/null 2>&1
-        else
-            echo "Python version is 3.10 or above."
-        fi
+elif [[ "$distro" == "Ubuntu" && "$version" == "24.04" ]]; then
+    echo "Detected Ubuntu 24.04 LTS. Installing Python 3.12 from official repos..."
+    apt update -y >/dev/null 2>&1
+    apt install -y python3.12 python3.12-venv python3.12-dev wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
+    
+    # Set Python 3.12 as default if not already
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+    update-alternatives --set python3 /usr/bin/python3.12 2>/dev/null || true
 
 elif [[ "$distro" == "Debian" && "$version" == "11" ]]; then
-    echo "Detected Debian 11. Installing Python 3.10 and WireGuard dependencies..."
-    echo "Please wait."
-    # Suppress output of the apt installation
-     apt install -y build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev \
-    libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev wireguard-tools \
-    net-tools >/dev/null 2>&1
-    echo "Please wait.."
-    # Download Python source and suppress output
-    wget https://www.python.org/ftp/python/3.10.0/Python-3.10.0.tgz -q
-    echo "Please wait..."
-    # Extract Python source and suppress output
-    tar -xvf Python-3.10.0.tgz >/dev/null 2>&1
-    cd Python-3.10.0
-    echo "Please wait...."
-    # Suppress output of the configure, make, and make install commands
-     ./configure --enable-optimizations >/dev/null 2>&1
-    echo "Please wait....."
-     make >/dev/null 2>&1
-    echo "Please wait......"
-    echo "Please wait...... Upgrading Python to v3.10 could take a while"
-    echo "Please wait......"
-     make altinstall >/dev/null 2>&1
-    echo "Python installation...... success"
-else
+    echo "Detected Debian 11. Installing Python 3.12 from source and WireGuard dependencies..."
+    install_python312_from_source
+    apt install -y wireguard-tools net-tools >/dev/null 2>&1
 
-    echo "This script supports only Ubuntu 20.04 LTS, 22.04, 24.02, and Debian 11 & 12."
+elif [[ "$distro" == "Debian" && "$version" == "12" ]]; then
+    echo "Detected Debian 12. Installing Python 3.12 from official repos..."
+    apt update -y >/dev/null 2>&1
+    apt install -y python3.12 python3.12-venv python3.12-dev wireguard-tools net-tools --no-install-recommends >/dev/null 2>&1
+    
+    # Set Python 3.12 as default
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+    update-alternatives --set python3 /usr/bin/python3.12 2>/dev/null || true
+
+else
+    echo "This script supports only Ubuntu 20.04 LTS, 22.04, 24.04, and Debian 11 & 12."
     echo "Your version, $distro $version, is not supported at this time."
     exit 1
 fi
 
+# Verify Python 3.12 installation
+echo "Verifying Python installation..."
+python3 --version
+required_version="3.12"
+installed_version=$(python3 --version 2>&1 | awk '{print $2}')
+
+if [[ "$installed_version" != "$required_version"* ]]; then
+    echo "Error: Python $required_version or higher is required. Found Python $installed_version"
+    exit 1
+fi
+
+# Ensure pip is installed for Python 3.12
+echo "Ensuring pip is installed for Python 3.12..."
+if ! python3 -m ensurepip --upgrade >/dev/null 2>&1; then
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3 >/dev/null 2>&1
+fi
+
+# Upgrade pip to latest version
+python3 -m pip install --upgrade pip >/dev/null 2>&1
+
+# Install bcrypt and other dependencies that will be needed
+echo "Installing required Python packages..."
+python3 -m pip install bcrypt >/dev/null 2>&1
+
+echo "Python 3.12 setup completed successfully"
 
 # Check if pip is installed
 if ! command -v pip &> /dev/null; then
